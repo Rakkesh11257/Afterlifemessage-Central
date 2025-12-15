@@ -1,0 +1,10 @@
+node_modules/
+**/.cache/
+build/
+.serverless/
+backend/.serverless/
+.env
+.env.production
+backend/.env
+backend/.env.development
+backend/.env.production

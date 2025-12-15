@@ -1,0 +1,248 @@
+service: afterlifemessage-backend
+
+plugins:
+  - serverless-dotenv-plugin
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ap-south-1
+  
+  # API Gateway configuration for larger payloads
+  apiGateway:
+    shouldStartNameWithService: true
+    binaryMediaTypes:
+      - '*/*'
+    minimumCompressionSize: 1024
+  
+  # Lambda configuration for larger payloads
+  timeout: 60  # Increased timeout for large file processing
+  memorySize: 2048  # Increased memory for large file processing
+  
+  environment:
+    # Core resource names (non-secret)
+    USERS_TABLE: afterlifemessage-backend-users-dev
+    DYNAMODB_TABLE: afterlifemessage-backend-messages-dev
+    S3_BUCKET: afterlifemessage-dev
+
+    # Secrets are loaded from environment variables (never hard-coded in Git)
+    ZEPTO_PASSWORD: ${env:ZEPTO_PASSWORD}
+    ZEPTO_FROM_EMAIL: ${env:ZEPTO_FROM_EMAIL}
+    WHATSAPP_ACCESS_TOKEN: ${env:WHATSAPP_ACCESS_TOKEN}
+    WHATSAPP_PHONE_NUMBER_ID: ${env:WHATSAPP_PHONE_NUMBER_ID}
+    ENCRYPTION_KEY: ${env:ENCRYPTION_KEY}
+    TWILIO_ACCOUNT_SID: ${env:TWILIO_ACCOUNT_SID}
+    TWILIO_AUTH_TOKEN: ${env:TWILIO_AUTH_TOKEN}
+    TWILIO_WHATSAPP_NUMBER: ${env:TWILIO_WHATSAPP_NUMBER}
+
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:GetItem
+        - dynamodb:Query
+        - dynamodb:Scan
+      Resource:
+        - arn:aws:dynamodb:${self:provider.region}:*:table/afterlifemessage-backend-users-dev
+        - arn:aws:dynamodb:${self:provider.region}:*:table/afterlifemessage-backend-messages-dev
+    - Effect: Allow
+      Action:
+        - s3:GetObject
+        - s3:PutObject
+        - s3:DeleteObject
+      Resource:
+        - arn:aws:s3:::afterlifemessage-dev/*
+    - Effect: Allow
+      Action:
+        - logs:CreateLogGroup
+        - logs:CreateLogStream
+        - logs:PutLogEvents
+      Resource: "*"
+
+functions:
+  postConfirmation:
+    handler: functions/migrateUser.handler
+    environment:
+      USERS_TABLE: ${self:provider.environment.USERS_TABLE}
+
+  checkTriggers:
+    handler: functions/checkTriggers.handler
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+      USERS_TABLE: ${self:provider.environment.USERS_TABLE}
+      S3_BUCKET: ${self:provider.environment.S3_BUCKET}
+      ZEPTO_PASSWORD: ${self:provider.environment.ZEPTO_PASSWORD}
+      ZEPTO_FROM_EMAIL: ${self:provider.environment.ZEPTO_FROM_EMAIL}
+      WHATSAPP_ACCESS_TOKEN: ${self:provider.environment.WHATSAPP_ACCESS_TOKEN}
+      WHATSAPP_PHONE_NUMBER_ID: ${self:provider.environment.WHATSAPP_PHONE_NUMBER_ID}
+      MEDIA_JWT_SECRET: media-secret-key
+      ENCRYPTION_KEY: ${self:provider.environment.ENCRYPTION_KEY}
+      MEDIA_STREAM_BASE_URL: https://d15u5v4bkj.execute-api.ap-south-1.amazonaws.com/dev
+    events:
+      - schedule: cron(0 21 * * ? *)
+
+  getDecryptedMedia:
+    handler: functions/getDecryptedMedia.handler
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+      S3_BUCKET: ${self:provider.environment.S3_BUCKET}
+      MEDIA_JWT_SECRET: media-secret-key
+      ENCRYPTION_KEY: ${self:provider.environment.ENCRYPTION_KEY}
+    events:
+      - http:
+          path: /media/{messageId}
+          method: get
+          cors: true
+          integration: lambda-proxy
+
+  createMessage:
+    handler: functions/createMessage.handler
+    # Attach FFmpeg Lambda Layer for audio conversion
+    layers:
+      - arn:aws:lambda:ap-south-1:558608220178:layer:ffmpeg:31
+    timeout: 60
+    memorySize: 2048
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+      S3_BUCKET: ${self:provider.environment.S3_BUCKET}
+      ENCRYPTION_KEY: ${self:provider.environment.ENCRYPTION_KEY}
+    events:
+      - http:
+          path: /messages
+          method: post
+          cors: true
+          integration: lambda-proxy
+
+  updateMessage:
+    handler: functions/updateMessage.handler
+    # Attach FFmpeg Lambda Layer for audio conversion
+    layers:
+      - arn:aws:lambda:ap-south-1:558608220178:layer:ffmpeg:31
+    timeout: 60
+    memorySize: 2048
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+      S3_BUCKET: ${self:provider.environment.S3_BUCKET}
+      ENCRYPTION_KEY: ${self:provider.environment.ENCRYPTION_KEY}
+    events:
+      - http:
+          path: /messages/{messageId}
+          method: put
+          cors: true
+          integration: lambda-proxy
+
+  getUploadUrl:
+    handler: functions/getUploadUrl.handler
+    environment:
+      S3_BUCKET: ${self:provider.environment.S3_BUCKET}
+    events:
+      - http:
+          path: /upload-url
+          method: post
+          cors: true
+          integration: lambda-proxy
+
+
+  getMessages:
+    handler: functions/getMessages.handler
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+    events:
+      - http:
+          path: /messages
+          method: get
+          cors: true
+          integration: lambda-proxy
+
+  getMessage:
+    handler: functions/getMessage.handler
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+    events:
+      - http:
+          path: /messages/{messageId}
+          method: get
+          cors: true
+          integration: lambda-proxy
+
+  deleteMessage:
+    handler: functions/deleteMessage.handler
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+      S3_BUCKET: ${self:provider.environment.S3_BUCKET}
+    events:
+      - http:
+          path: /messages/{messageId}
+          method: delete
+          cors: true
+          integration: lambda-proxy
+
+  updateUserProfile:
+    handler: functions/updateUserProfile.handler
+    environment:
+      USERS_TABLE: ${self:provider.environment.USERS_TABLE}
+    events:
+      - http:
+          path: /user/profile
+          method: put
+          cors: true
+          integration: lambda-proxy
+
+  getUserProfile:
+    handler: functions/getUserProfile.handler
+    environment:
+      USERS_TABLE: ${self:provider.environment.USERS_TABLE}
+    events:
+      - http:
+          path: /user/profile
+          method: get
+          cors: true
+          integration: lambda-proxy
+
+  handlePayment:
+    handler: functions/handlePayment.handler
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+    events:
+      - http:
+          path: /payment/webhook
+          method: post
+          cors: true
+          integration: lambda-proxy
+
+  createPayment:
+    handler: functions/createPayment.handler
+    environment:
+      DYNAMODB_TABLE: ${self:provider.environment.DYNAMODB_TABLE}
+    events:
+      - http:
+          path: /payment/create
+          method: post
+          cors: true
+          integration: lambda-proxy
+
+  updateUserActivity:
+    handler: functions/updateUserActivity.handler
+    environment:
+      USERS_TABLE: ${self:provider.environment.USERS_TABLE}
+    events:
+      - http:
+          path: /activity
+          method: post
+          cors: true
+          integration: lambda-proxy
+
+  testWhatsApp:
+    handler: functions/testWhatsApp.handler
+    environment:
+      WHATSAPP_ACCESS_TOKEN: ${self:provider.environment.WHATSAPP_ACCESS_TOKEN}
+      WHATSAPP_PHONE_NUMBER_ID: ${self:provider.environment.WHATSAPP_PHONE_NUMBER_ID}
+    events:
+      - http:
+          path: /test-whatsapp
+          method: post
+          cors: true
+          integration: lambda-proxy
+
+# No resources section, as we are using an existing DynamoDB table and Cognito user pool 
