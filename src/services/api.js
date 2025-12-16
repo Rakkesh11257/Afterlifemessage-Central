@@ -10,7 +10,7 @@ const isDevelopment = process.env.NODE_ENV === 'development' ||
                      window.location.hostname === 'lifeaftermessagedev.cloudmastery.in' ||
                      window.location.hostname.includes('amplifyapp.com');
 
-const API_BASE_URL = 'https://d15u5v4bkj.execute-api.ap-south-1.amazonaws.com/dev';
+const API_BASE_URL = 'https://kk9hsbofeh.execute-api.ap-south-1.amazonaws.com/dev';
 
 console.log('=== API CONFIGURATION ===');
 console.log('Current hostname:', window.location.hostname);

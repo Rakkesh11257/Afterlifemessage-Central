@@ -3,8 +3,8 @@ import { Amplify } from 'aws-amplify';
 const awsconfig = {
   Auth: {
     region: 'ap-south-1',
-    userPoolId: 'ap-south-1_AYpQVjJlV',
-    userPoolWebClientId: '36o49m40gmp35t64g64mh7o7g6',
+    userPoolId: 'ap-south-1_CRybCfDpw',
+    userPoolWebClientId: '4u0t1nn1ivbrbplvdhd0pjjn6e',
     authenticationFlowType: 'USER_PASSWORD_AUTH',
     mandatorySignIn: true,
     cookieStorage: {
@@ -18,7 +18,7 @@ const awsconfig = {
     endpoints: [
       {
         name: 'AfterLifeMessageAPI',
-        endpoint: 'https://d15u5v4bkj.execute-api.ap-south-1.amazonaws.com/dev',
+        endpoint: 'https://kk9hsbofeh.execute-api.ap-south-1.amazonaws.com/dev',
         region: 'ap-south-1'
       }
     ]

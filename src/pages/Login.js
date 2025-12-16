@@ -12,7 +12,7 @@ async function createOrUpdateUserProfile(displayName, mobile) {
   const session = await Auth.currentSession();
   const token = session.getIdToken().getJwtToken();
   await axios.put(
-    'https://d15u5v4bkj.execute-api.ap-south-1.amazonaws.com/dev/profile',
+    'https://kk9hsbofeh.execute-api.ap-south-1.amazonaws.com/dev/user/profile',
     { displayName, phoneNumber: mobile },
     {
       headers: {
@@ -122,11 +122,14 @@ const Login = () => {
           const displayName = signupFullName;
           const mobile = signupMobile;
           if (displayName && mobile) {
+            const session = await Auth.currentSession();
+            const token = session.getIdToken().getJwtToken();
             await axios.put(
-              'https://d15u5v4bkj.execute-api.ap-south-1.amazonaws.com/dev/profile',
+              'https://kk9hsbofeh.execute-api.ap-south-1.amazonaws.com/dev/user/profile',
               { displayName, phoneNumber: mobile },
               {
                 headers: {
+                  Authorization: `Bearer ${token}`,
                   'Content-Type': 'application/json',
                 }
               }

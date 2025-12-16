@@ -1,12 +1,22 @@
 service: afterlifemessage-backend
 
 plugins:
-  - serverless-dotenv-plugin
+  - ./plugins/ssm-stage-resolver
+
+custom:
+  # API Gateway base URL - stored in SSM Parameter Store
+  apiGatewayBaseUrl: ${ssm:/afterlifemessage/${self:provider.stage}/api-gateway-url, true}
 
 provider:
   name: aws
   runtime: nodejs20.x
   region: ap-south-1
+  stage: ${opt:stage, 'dev'}  # Default to 'dev' if not specified via --stage
+  
+  # Deployment bucket configuration
+  deploymentBucket:
+    name: afterlifemessage-backend-deployments-${self:provider.stage}
+    blockPublicAccess: true
   
   # API Gateway configuration for larger payloads
   apiGateway:
@@ -20,20 +30,22 @@ provider:
   memorySize: 2048  # Increased memory for large file processing
   
   environment:
-    # Core resource names (non-secret)
-    USERS_TABLE: afterlifemessage-backend-users-dev
-    DYNAMODB_TABLE: afterlifemessage-backend-messages-dev
-    S3_BUCKET: afterlifemessage-dev
+    # Core resource names (non-secret, stage-specific)
+    USERS_TABLE: afterlifemessage-backend-users-${self:provider.stage}
+    DYNAMODB_TABLE: afterlifemessage-backend-messages-${self:provider.stage}
+    S3_BUCKET: afterlifemessage-${self:provider.stage}
 
-    # Secrets are loaded from environment variables (never hard-coded in Git)
-    ZEPTO_PASSWORD: ${env:ZEPTO_PASSWORD}
-    ZEPTO_FROM_EMAIL: ${env:ZEPTO_FROM_EMAIL}
-    WHATSAPP_ACCESS_TOKEN: ${env:WHATSAPP_ACCESS_TOKEN}
-    WHATSAPP_PHONE_NUMBER_ID: ${env:WHATSAPP_PHONE_NUMBER_ID}
-    ENCRYPTION_KEY: ${env:ENCRYPTION_KEY}
-    TWILIO_ACCOUNT_SID: ${env:TWILIO_ACCOUNT_SID}
-    TWILIO_AUTH_TOKEN: ${env:TWILIO_AUTH_TOKEN}
-    TWILIO_WHATSAPP_NUMBER: ${env:TWILIO_WHATSAPP_NUMBER}
+    # Secrets loaded from AWS SSM Parameter Store (secure, never in code)
+    # The ssm-stage-resolver plugin will replace ${self:provider.stage} with actual stage (dev/prod)
+    # Using , true to decrypt SecureString parameters (Serverless v4 syntax)
+    ZEPTO_PASSWORD: ${ssm:/afterlifemessage/${self:provider.stage}/zepto-password, true}
+    ZEPTO_FROM_EMAIL: ${ssm:/afterlifemessage/${self:provider.stage}/zepto-from-email, true}
+    WHATSAPP_ACCESS_TOKEN: ${ssm:/afterlifemessage/${self:provider.stage}/whatsapp-access-token, true}
+    WHATSAPP_PHONE_NUMBER_ID: ${ssm:/afterlifemessage/${self:provider.stage}/whatsapp-phone-number-id, true}
+    ENCRYPTION_KEY: ${ssm:/afterlifemessage/${self:provider.stage}/encryption-key, true}
+    TWILIO_ACCOUNT_SID: ${ssm:/afterlifemessage/${self:provider.stage}/twilio-account-sid, true}
+    TWILIO_AUTH_TOKEN: ${ssm:/afterlifemessage/${self:provider.stage}/twilio-auth-token, true}
+    TWILIO_WHATSAPP_NUMBER: ${ssm:/afterlifemessage/${self:provider.stage}/twilio-whatsapp-number, true}
 
   iamRoleStatements:
     - Effect: Allow
@@ -44,21 +56,29 @@ provider:
         - dynamodb:Query
         - dynamodb:Scan
       Resource:
-        - arn:aws:dynamodb:${self:provider.region}:*:table/afterlifemessage-backend-users-dev
-        - arn:aws:dynamodb:${self:provider.region}:*:table/afterlifemessage-backend-messages-dev
+        - arn:aws:dynamodb:${self:provider.region}:*:table/afterlifemessage-backend-users-${self:provider.stage}
+        - arn:aws:dynamodb:${self:provider.region}:*:table/afterlifemessage-backend-messages-${self:provider.stage}
     - Effect: Allow
       Action:
         - s3:GetObject
         - s3:PutObject
         - s3:DeleteObject
       Resource:
-        - arn:aws:s3:::afterlifemessage-dev/*
+        - arn:aws:s3:::afterlifemessage-${self:provider.stage}/*
     - Effect: Allow
       Action:
         - logs:CreateLogGroup
         - logs:CreateLogStream
         - logs:PutLogEvents
       Resource: "*"
+    # Allow Lambda to read secrets from SSM Parameter Store
+    - Effect: Allow
+      Action:
+        - ssm:GetParameter
+        - ssm:GetParameters
+        - ssm:GetParametersByPath
+      Resource:
+        - arn:aws:ssm:${self:provider.region}:*:parameter/afterlifemessage/${self:provider.stage}/*
 
 functions:
   postConfirmation:
@@ -78,7 +98,7 @@ functions:
       WHATSAPP_PHONE_NUMBER_ID: ${self:provider.environment.WHATSAPP_PHONE_NUMBER_ID}
       MEDIA_JWT_SECRET: media-secret-key
       ENCRYPTION_KEY: ${self:provider.environment.ENCRYPTION_KEY}
-      MEDIA_STREAM_BASE_URL: https://d15u5v4bkj.execute-api.ap-south-1.amazonaws.com/dev
+      MEDIA_STREAM_BASE_URL: ${self:custom.apiGatewayBaseUrl}/${self:provider.stage}
     events:
       - schedule: cron(0 21 * * ? *)
 
@@ -98,9 +118,9 @@ functions:
 
   createMessage:
     handler: functions/createMessage.handler
-    # Attach FFmpeg Lambda Layer for audio conversion
-    layers:
-      - arn:aws:lambda:ap-south-1:558608220178:layer:ffmpeg:31
+    # FFmpeg Lambda Layer temporarily removed - add back when you have a publicly accessible layer
+    # layers:
+    #   - arn:aws:lambda:ap-south-1:558608220178:layer:ffmpeg:31
     timeout: 60
     memorySize: 2048
     environment:
@@ -116,9 +136,9 @@ functions:
 
   updateMessage:
     handler: functions/updateMessage.handler
-    # Attach FFmpeg Lambda Layer for audio conversion
-    layers:
-      - arn:aws:lambda:ap-south-1:558608220178:layer:ffmpeg:31
+    # FFmpeg Lambda Layer temporarily removed - add back when you have a publicly accessible layer
+    # layers:
+    #   - arn:aws:lambda:ap-south-1:558608220178:layer:ffmpeg:31
     timeout: 60
     memorySize: 2048
     environment:
