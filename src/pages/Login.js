@@ -6,6 +6,7 @@ import { Eye, EyeOff, Mail, Lock, User, ArrowLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import axios from 'axios';
 import { Auth } from 'aws-amplify';
+import { messageAPI } from '../services/api';
 
 // Helper to create/update user profile in backend
 async function createOrUpdateUserProfile(displayName, mobile) {
@@ -34,6 +35,7 @@ const Login = () => {
   const [pendingEmail, setPendingEmail] = useState('');
   const [pendingPassword, setPendingPassword] = useState('');
   const [confirmationSuccess, setConfirmationSuccess] = useState(false);
+  const [requiresEmailVerification, setRequiresEmailVerification] = useState(false); // Track if this is email verification vs account confirmation
   const [signupEmail, setSignupEmail] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
   const [signupFullName, setSignupFullName] = useState('');
@@ -41,7 +43,7 @@ const Login = () => {
   const [signupConfirmPassword, setSignupConfirmPassword] = useState('');
   const [resendLoading, setResendLoading] = useState(false);
   
-  const { signIn, signUp, confirmSignUp } = useAuth();
+  const { signIn, signUp, confirmSignUp, refreshUser } = useAuth();
   const navigate = useNavigate();
   
   const { register, handleSubmit, formState: { errors }, watch, setError, clearErrors } = useForm();
@@ -81,11 +83,11 @@ const Login = () => {
             toast.error(result.error || 'Sign up failed');
           }
         } catch (err) {
-          if (err.code === 'UsernameExistsException') {
-            // Try to resend code if user is unconfirmed
+          if (err.code === 'UsernameExistsException' || err.code === 'AliasExistsException') {
+            // User exists but might be unconfirmed - try to handle it
             setEmailForConfirmation(data.email);
             setShowConfirmation(true);
-            toast.error('User already exists but is not confirmed. Please confirm your account.');
+            toast.error('An account with this email already exists. If you haven\'t confirmed it, please enter the confirmation code below or click "Resend Confirmation Code".');
           } else {
             toast.error(err.message || 'Sign up failed');
           }
@@ -94,12 +96,31 @@ const Login = () => {
         const result = await signIn(data.email, data.password);
         if (result.success) {
           navigate('/dashboard');
-        } else if (result.notConfirmed) {
+        } else if (result.notConfirmed || result.requiresEmailVerification) {
           setNotConfirmed(true);
-          setPendingEmail(data.email);
+          // Use the email from result if available (for email verification), otherwise use input email
+          setPendingEmail(result.email || data.email);
           setPendingPassword(data.password);
+          setRequiresEmailVerification(result.requiresEmailVerification || false);
           setShowConfirmation(true);
-          toast.error(result.error || 'Your account is not confirmed. Please check your email for the confirmation code.');
+          
+          // If this is email verification (not initial signup), automatically send verification code
+          if (result.requiresEmailVerification) {
+            try {
+              const { Auth } = await import('aws-amplify');
+              // First, sign in to get the user object
+              const user = await Auth.signIn(data.email, data.password);
+              // Then request verification code for email attribute
+              await Auth.verifyUserAttribute(user, 'email');
+              toast.success('Verification code sent to your email!', { duration: 5000 });
+            } catch (verifyError) {
+              console.error('Error sending verification code:', verifyError);
+              // Don't block the flow - user can resend manually
+            }
+          }
+          
+          const errorMsg = result.error || 'Your email needs to be verified. Please check your email for the verification code.';
+          toast.error(errorMsg, { duration: 6000 });
         } else {
           toast.error(result.error || 'Sign in failed');
         }
@@ -114,13 +135,61 @@ const Login = () => {
   const handleConfirm = async () => {
     setIsLoading(true);
     try {
+      // If this is email verification (not initial signup), use verifyUserAttributeSubmit
+      if (requiresEmailVerification) {
+        const { Auth } = await import('aws-amplify');
+        // Sign in first to get the user object
+        const user = await Auth.signIn(pendingEmail, pendingPassword);
+        // Verify the email attribute
+        await Auth.verifyUserAttributeSubmit(user, 'email', confirmationCode);
+        
+        // Get fresh user data with bypassCache to ensure email_verified is updated
+        const verifiedUser = await Auth.currentAuthenticatedUser({ bypassCache: true });
+        const verifiedEmail = verifiedUser.attributes.email;
+        console.log('User after email verification:', {
+          email: verifiedEmail,
+          email_verified: verifiedUser.attributes.email_verified
+        });
+        
+        // Update DynamoDB with new email by calling getUserProfile
+        // The backend getUserProfile function will sync email from Cognito to DynamoDB
+        try {
+          await messageAPI.getUserProfile();
+          console.log('DynamoDB updated with new email:', verifiedEmail);
+        } catch (profileError) {
+          console.error('Error updating DynamoDB with new email:', profileError);
+          // Don't block the flow - email is verified in Cognito and DynamoDB will sync on next getUserProfile call
+        }
+        
+        // Refresh user in AuthContext to update the user state
+        if (refreshUser) {
+          await refreshUser();
+        }
+        
+        // User is already signed in from signIn call above, so we can redirect directly to dashboard
+        toast.success('Email verified and updated successfully! Redirecting to dashboard...');
+        setShowConfirmation(false);
+        setNotConfirmed(false);
+        setRequiresEmailVerification(false);
+        setIsLoading(false);
+        
+        // Redirect directly to dashboard - user is already authenticated
+        navigate('/dashboard');
+        return;
+      }
+      
+      // For initial account confirmation, use confirmSignUp
       const result = await confirmSignUp(pendingEmail || emailForConfirmation, confirmationCode);
       if (result.success) {
         // After confirmation, update user profile in backend
         try {
           // Use the persisted signup values
           const displayName = signupFullName;
-          const mobile = signupMobile;
+          let mobile = signupMobile;
+          // Format phone number to E.164 format if not already (consistent with signup)
+          if (mobile && !mobile.startsWith('+')) {
+            mobile = '+91' + mobile.replace(/^0+/, ''); // Default to India country code, adjust as needed
+          }
           if (displayName && mobile) {
             const session = await Auth.currentSession();
             const token = session.getIdToken().getJwtToken();
@@ -154,7 +223,28 @@ const Login = () => {
         toast.error(result.error || 'Invalid confirmation code.');
       }
     } catch (error) {
-      toast.error('An error occurred. Please try again.');
+      console.error('Confirmation error:', error);
+      // Handle specific error cases for email verification
+      if (requiresEmailVerification) {
+        if (error.code === 'CodeMismatchException') {
+          toast.error('Invalid verification code. Please check your email and try again.');
+        } else if (error.code === 'ExpiredCodeException') {
+          toast.error('Verification code has expired. Please request a new one.');
+        } else if (error.code === 'LimitExceededException') {
+          toast.error('Too many attempts. Please wait 15 minutes before trying again.');
+        } else {
+          toast.error(`Verification failed: ${error.message || 'Unknown error'}`);
+        }
+      } else {
+        // For account confirmation errors
+        if (error.message?.includes('already confirmed') || error.message?.includes('CONFIRMED')) {
+          toast.error('This account is already confirmed. Please try signing in.');
+          setShowConfirmation(false);
+          setIsSignUp(false);
+        } else {
+          toast.error('An error occurred. Please try again.');
+        }
+      }
     } finally {
       setIsLoading(false);
     }
@@ -163,10 +253,45 @@ const Login = () => {
   const handleResendCode = async () => {
     setResendLoading(true);
     try {
-      await Auth.resendSignUp(emailForConfirmation || pendingEmail);
+      const email = emailForConfirmation || pendingEmail;
+      if (!email) {
+        toast.error('Email address is required');
+        setResendLoading(false);
+        return;
+      }
+      
+      // If this is email verification (not initial signup), use verifyUserAttribute
+      if (requiresEmailVerification) {
+        const { Auth } = await import('aws-amplify');
+        // Sign in first to get the user object
+        const user = await Auth.signIn(email, pendingPassword);
+        // Request verification code for email attribute
+        await Auth.verifyUserAttribute(user, 'email');
+        toast.success('Verification code resent! Please check your email.');
+        setResendLoading(false);
+        return;
+      }
+      
+      // For initial account confirmation, use resendSignUp
+      await Auth.resendSignUp(email);
       toast.success('Confirmation code resent! Please check your email.');
     } catch (err) {
-      toast.error(err.message || 'Failed to resend code.');
+      console.error('Resend code error:', err);
+      
+      // Handle specific error cases
+      if (err.code === 'UserNotFoundException') {
+        toast.error('User not found. Please sign up again.');
+      } else if (err.code === 'InvalidParameterException') {
+        toast.error('Invalid request. Please try signing up again.');
+      } else if (err.code === 'LimitExceededException') {
+        toast.error('Too many attempts. Please wait a few minutes before trying again.');
+      } else if (err.message?.includes('already confirmed')) {
+        toast.error('This account is already confirmed. Please try signing in.');
+        setShowConfirmation(false);
+        setIsSignUp(false);
+      } else {
+        toast.error(err.message || 'Failed to resend code. Please try signing up again.');
+      }
     } finally {
       setResendLoading(false);
     }
@@ -187,9 +312,14 @@ const Login = () => {
       <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-md w-full space-y-8">
           <div className="text-center">
-            <h2 className="text-3xl font-bold text-gray-900">Confirm Your Account</h2>
+            <h2 className="text-3xl font-bold text-gray-900">
+              {requiresEmailVerification ? 'Verify Your Email' : 'Confirm Your Account'}
+            </h2>
             <p className="mt-2 text-gray-600">
-              We've sent a confirmation code to {emailForConfirmation || pendingEmail}
+              {requiresEmailVerification 
+                ? `We've sent a verification code to ${emailForConfirmation || pendingEmail}. Please enter it below to verify your email address.`
+                : `We've sent a confirmation code to ${emailForConfirmation || pendingEmail}`
+              }
             </p>
           </div>
           

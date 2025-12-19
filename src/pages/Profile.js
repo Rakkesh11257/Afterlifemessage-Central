@@ -10,14 +10,12 @@ const Profile = () => {
   const navigate = useNavigate();
   const [isEditing, setIsEditing] = useState(false);
   const [newEmail, setNewEmail] = useState('');
-  const [isUpdatingEmail, setIsUpdatingEmail] = useState(false);
+  const [newDisplayName, setNewDisplayName] = useState('');
+  const [newMobile, setNewMobile] = useState('');
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [showOtpInput, setShowOtpInput] = useState(false);
   const [otp, setOtp] = useState('');
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
-  const [isEditingDisplayName, setIsEditingDisplayName] = useState(false);
-  const [newDisplayName, setNewDisplayName] = useState('');
-  const [isUpdatingDisplayName, setIsUpdatingDisplayName] = useState(false);
-  const [newMobile, setNewMobile] = useState('');
   const [userStats, setUserStats] = useState({
     totalMessages: 0,
     pendingMessages: 0,
@@ -30,7 +28,20 @@ const Profile = () => {
   useEffect(() => {
     fetchUserStats();
     fetchUserProfile();
-  }, []);
+    // Refresh user data periodically to get updated email_verified status
+    // This is especially important after email changes
+    const refreshInterval = setInterval(async () => {
+      if (user) {
+        try {
+          await refreshUser();
+        } catch (error) {
+          console.error('Error refreshing user:', error);
+        }
+      }
+    }, 30000); // Refresh every 30 seconds
+    
+    return () => clearInterval(refreshInterval);
+  }, [user]);
 
   useEffect(() => {
     if (userProfile) {
@@ -97,43 +108,166 @@ const Profile = () => {
     navigate('/reset-password');
   };
 
-  const handleEditEmail = () => {
+  const handleEdit = () => {
     setNewEmail(getUserEmail());
+    setNewDisplayName(getUserDisplayName());
+    setNewMobile(userProfile?.phoneNumber || '');
     setIsEditing(true);
   };
 
-  const handleSaveEmail = async () => {
-    if (!newEmail || newEmail === getUserEmail()) {
-      setIsEditing(false);
-      setNewEmail('');
+  const handleSaveProfile = async () => {
+    // Validate all fields
+    if (!newDisplayName || newDisplayName.trim() === '') {
+      toast.error('Please enter a valid display name');
+      return;
+    }
+    if (!newMobile || newMobile.trim() === '') {
+      toast.error('Please enter a valid mobile number');
       return;
     }
 
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(newEmail)) {
-      toast.error('Please enter a valid email address');
-      return;
+    // Validate email if it changed
+    const emailChanged = newEmail !== getUserEmail();
+    if (emailChanged) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(newEmail)) {
+        toast.error('Please enter a valid email address');
+        return;
+      }
     }
 
     try {
-      setIsUpdatingEmail(true);
+      setIsUpdatingProfile(true);
       
-      // Update email using AWS Amplify Auth
       const { Auth } = await import('aws-amplify');
       const currentUser = await Auth.currentAuthenticatedUser();
       
+      // Update display name and phone number in Cognito
+      let phoneNumber = newMobile;
+      if (phoneNumber && !phoneNumber.startsWith('+')) {
+        phoneNumber = '+91' + phoneNumber.replace(/^0+/, ''); // Default to India country code
+      }
+      
       await Auth.updateUserAttributes(currentUser, {
-        email: newEmail
+        name: newDisplayName,
+        phone_number: phoneNumber
       });
 
-      toast.success('Email updated! Please check your new email for verification code.');
-      setShowOtpInput(true);
-      setIsUpdatingEmail(false);
+      // Update display name and phone in DynamoDB
+      if (userProfile && userProfile.userId) {
+        const payload = {
+          displayName: newDisplayName.trim(),
+          phoneNumber: phoneNumber
+        };
+        console.log('Updating user profile with payload:', payload);
+        try {
+          await messageAPI.updateUserProfile(payload);
+          console.log('Profile updated in DynamoDB successfully');
+        } catch (updateError) {
+          console.error('Error updating profile in DynamoDB:', updateError);
+          // Don't fail the whole flow if DynamoDB update fails - Cognito is already updated
+          toast.error(`Profile updated in Cognito, but failed to update in database: ${updateError.response?.data?.error || updateError.message}`);
+        }
+      } else {
+        console.error('Cannot update DynamoDB: userProfile or userId missing', { userProfile });
+        toast.error('Cannot update profile: User profile not found. Please refresh the page.');
+        setIsUpdatingProfile(false);
+        return;
+      }
+
+      // If email changed, update it separately with verification flow
+      if (emailChanged) {
+        // Warn user about email verification requirement
+        const confirmed = window.confirm(
+          '⚠️ IMPORTANT: Your email address will be changed.\n\n' +
+          'After changing your email, you MUST verify the new email address with the confirmation code that will be sent to your new email.\n\n' +
+          'If you do not verify your new email address:\n' +
+          '• You will not be able to log in\n' +
+          '• Your messages will NOT be delivered\n' +
+          '• You may lose access to your account\n\n' +
+          'Do you want to continue?'
+        );
+
+        if (!confirmed) {
+          setIsUpdatingProfile(false);
+          return;
+        }
+
+        // Update email attribute - this will send verification code to new email
+        await Auth.updateUserAttributes(currentUser, {
+          email: newEmail
+        });
+
+        // Explicitly request verification code for the new email attribute
+        try {
+          await Auth.verifyUserAttribute(currentUser, 'email');
+          console.log('Verification code sent to new email:', newEmail);
+        } catch (verifyError) {
+          console.log('Verification code send attempt:', verifyError.message || verifyError);
+        }
+
+        // Refresh user object to get updated email_verified status
+        await refreshUser();
+        
+        // Get fresh user data with bypassCache to see actual verification status
+        const updatedUser = await Auth.currentAuthenticatedUser({ bypassCache: true });
+        console.log('Email after change (fresh data):', {
+          email: updatedUser.attributes.email,
+          email_verified: updatedUser.attributes.email_verified,
+          userStatus: updatedUser.attributes['cognito:user_status']
+        });
+
+        // Check if email is actually verified
+        const isVerified = updatedUser.attributes.email_verified === true || updatedUser.attributes.email_verified === 'true';
+        
+        if (!isVerified) {
+          toast.success('Profile updated! Please check your NEW email address for the verification code. You must verify your email before logging in again.', {
+            duration: 8000,
+            icon: '⚠️'
+          });
+          // Show OTP input for immediate verification
+          setShowOtpInput(true);
+          setIsUpdatingProfile(false);
+          return; // Don't exit edit mode yet - wait for email verification
+        }
+      }
+
+      // If no email change or email already verified, complete the update
+      toast.success('Profile updated successfully!');
+      setIsEditing(false);
+      setNewEmail('');
+      setNewDisplayName('');
+      setNewMobile('');
+      setShowOtpInput(false);
+      
+      // Refresh user data
+      await refreshUser();
+      await fetchUserProfile();
+      await fetchUserStats();
+      
+      setIsUpdatingProfile(false);
     } catch (error) {
-      console.error('Error updating email:', error);
-      toast.error('Failed to update email. Please try again.');
-      setIsUpdatingEmail(false);
+      console.error('Error updating profile:', error);
+      toast.error(`Failed to update profile: ${error.message || 'Please try again.'}`);
+      setIsUpdatingProfile(false);
+    }
+  };
+
+  const handleResendEmailVerificationCode = async () => {
+    try {
+      const { Auth } = await import('aws-amplify');
+      const currentUser = await Auth.currentAuthenticatedUser();
+      
+      // Resend verification code for email attribute (not signup confirmation)
+      await Auth.verifyUserAttribute(currentUser, 'email');
+      toast.success('Verification code resent! Please check your email.');
+    } catch (error) {
+      console.error('Error resending verification code:', error);
+      if (error.code === 'LimitExceededException') {
+        toast.error('Too many attempts. Please wait 15 minutes before requesting another code. AWS Cognito rate limit: Maximum 3 verification codes per 15 minutes per user.');
+      } else {
+        toast.error(error.message || 'Failed to resend verification code.');
+      }
     }
   };
 
@@ -149,57 +283,42 @@ const Profile = () => {
       const { Auth } = await import('aws-amplify');
       const currentUser = await Auth.currentAuthenticatedUser();
       
-      // Verify the OTP
+      // Verify the OTP for email attribute
+      // Note: This will work even if Cognito shows email_verified as true
+      // because we're verifying the attribute change, not the account confirmation
       await Auth.verifyUserAttributeSubmit(currentUser, 'email', otp);
       
       toast.success('Email verified successfully!');
+      
+      // Update user profile in DynamoDB with new email
+      try {
+        // Get the updated user to fetch new email
+        const updatedUser = await Auth.currentAuthenticatedUser({ bypassCache: true });
+        const verifiedEmail = updatedUser.attributes.email;
+        
+        // Update user profile in DynamoDB (email is stored in Cognito, but we can update DynamoDB for consistency)
+        // Note: Messages are tied to userId, not email, so no migration needed
+        const refreshResult = await refreshUser();
+        if (refreshResult.success) {
+          // Refresh the user profile data
+          await fetchUserProfile();
+          await fetchUserStats();
+          
+          toast.success('Email updated successfully! Your profile has been refreshed.');
+        } else {
+          console.error('Failed to refresh user data:', refreshResult.error);
+          toast.success('Email verified! Please refresh the page to see the update.');
+        }
+      } catch (updateError) {
+        console.error('Error updating user profile:', updateError);
+        // Don't fail the whole flow if profile update fails - email is already verified in Cognito
+        toast.success('Email verified! Your email has been updated in Cognito.');
+      }
+      
       setShowOtpInput(false);
       setOtp('');
       setIsEditing(false);
       setNewEmail('');
-      
-      // Migrate user data to new email
-      try {
-        const oldEmail = getUserEmail();
-        const userProfile = await messageAPI.getUserProfile();
-        
-        if (userProfile && userProfile.userId) {
-          console.log('Starting migration with:', { oldEmail, newEmail, userId: userProfile.userId });
-          
-          const migrationResult = await messageAPI.migrateUser(oldEmail, newEmail, userProfile.userId);
-          console.log('Migration result:', migrationResult);
-          
-          if (migrationResult.success) {
-            toast.success(`Migration completed! ${migrationResult.migratedMessages} messages updated.`);
-            
-            // Refresh the user session to get updated attributes
-            const refreshResult = await refreshUser();
-            if (refreshResult.success) {
-              // Also refresh the user profile data
-              await fetchUserProfile();
-              await fetchUserStats();
-              
-              toast.success('Email verification and migration completed! Your profile has been updated.');
-              // Force a page reload to ensure all data is updated
-              setTimeout(() => {
-                window.location.reload();
-              }, 2000);
-            } else {
-              console.error('Failed to refresh user data:', refreshResult.error);
-              toast.error('Migration completed but failed to refresh user data. Please refresh the page manually.');
-            }
-          } else {
-            toast.error(`Migration failed: ${migrationResult.error || 'Unknown error'}`);
-            console.error('Migration failed:', migrationResult);
-          }
-        } else {
-          toast.error('User profile not found. Please contact support.');
-          console.error('User profile not found:', userProfile);
-        }
-      } catch (migrationError) {
-        console.error('Error during user migration:', migrationError);
-        toast.error(`Migration failed: ${migrationError.message || 'Unknown error'}`);
-      }
     } catch (error) {
       console.error('Error verifying OTP:', error);
       if (error.code === 'CodeMismatchException') {
@@ -214,74 +333,47 @@ const Profile = () => {
     }
   };
 
-  const handleCancelOtp = () => {
+  const handleCancelOtp = async () => {
+    // Warn user about consequences of not verifying
+    const confirmed = window.confirm(
+      '⚠️ WARNING: Email verification cancelled.\n\n' +
+      'Your email has been changed to ' + newEmail + ' but is NOT verified.\n\n' +
+      'Consequences:\n' +
+      '• You will NOT be able to log in after signing out\n' +
+      '• Your messages will NOT be delivered\n' +
+      '• You may lose access to your account\n\n' +
+      'You can verify your email later, but you must do it before logging in again.\n\n' +
+      'Do you want to cancel verification?'
+    );
+    
+    if (!confirmed) {
+      return; // User wants to continue with verification
+    }
+    
+    // Don't sign out automatically - let user stay logged in but show warning
+    // They can verify later, but will need to verify before next login
     setShowOtpInput(false);
     setOtp('');
     setIsEditing(false);
-    setNewEmail('');
+    toast('Email verification cancelled. Your email is changed but NOT verified. You must verify it before your next login.', {
+      duration: 8000,
+      icon: '⚠️',
+      style: {
+        background: '#ffa500',
+        color: '#fff',
+      },
+    });
   };
 
   const handleCancelEdit = () => {
     setIsEditing(false);
     setNewEmail('');
+    setNewDisplayName('');
+    setNewMobile('');
     setShowOtpInput(false);
     setOtp('');
   };
 
-  const handleEditDisplayName = () => {
-    setNewDisplayName(getUserDisplayName());
-    setNewMobile(userProfile?.phoneNumber || '');
-    setIsEditingDisplayName(true);
-  };
-
-  const handleSaveDisplayName = async () => {
-    if (!newDisplayName || newDisplayName.trim() === '') {
-      toast.error('Please enter a valid display name');
-      return;
-    }
-    if (!newMobile || newMobile.trim() === '') {
-      toast.error('Please enter a valid mobile number');
-      return;
-    }
-    try {
-      setIsUpdatingDisplayName(true);
-      const { Auth } = await import('aws-amplify');
-      const currentUser = await Auth.currentAuthenticatedUser();
-      // Always update Cognito with 'name' and 'phone_number'
-      let phoneNumber = newMobile;
-      if (phoneNumber && !phoneNumber.startsWith('+')) {
-        phoneNumber = '+91' + phoneNumber.replace(/^0+/, ''); // Default to India country code, adjust as needed
-      }
-      await Auth.updateUserAttributes(currentUser, { name: newDisplayName, phone_number: phoneNumber });
-      if (userProfile && userProfile.userId) {
-        const payload = {
-          displayName: newDisplayName,
-          phoneNumber: phoneNumber
-        };
-        console.log('Sending profile update payload:', payload);
-        await messageAPI.updateUserProfile(payload);
-      } else {
-        toast.error('User profile not found. Please refresh the page and try again.');
-        setIsUpdatingDisplayName(false);
-        return;
-      }
-      toast.success('Profile updated successfully!');
-      setIsEditingDisplayName(false);
-      setNewDisplayName('');
-      setNewMobile('');
-      const refreshResult = await refreshUser();
-      await fetchUserProfile();
-    } catch (error) {
-      toast.error(`Failed to update profile: ${error.message || 'Unknown error'}`);
-    } finally {
-      setIsUpdatingDisplayName(false);
-    }
-  };
-
-  const handleCancelDisplayName = () => {
-    setIsEditingDisplayName(false);
-    setNewDisplayName('');
-  };
 
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -341,8 +433,12 @@ const Profile = () => {
   };
 
   // Check if email is verified
+  // Note: After email change, email_verified might be false even if account is CONFIRMED
   const isEmailVerified = () => {
-    return user?.attributes?.email_verified === true || false;
+    if (!user?.attributes) return false;
+    // email_verified can be boolean true/false or string "true"/"false"
+    const emailVerified = user.attributes.email_verified;
+    return emailVerified === true || emailVerified === 'true';
   };
 
   // Debug function to log user attributes
@@ -446,23 +542,15 @@ const Profile = () => {
                   <User className="h-5 w-5 mr-2 text-primary-600" />
                   Account Information
                 </h3>
-                <button
-                  onClick={isEditing ? handleCancelEdit : handleEditEmail}
-                  className="flex items-center text-primary-600 hover:text-primary-700"
-                  disabled={isUpdatingEmail}
-                >
-                  {isEditing ? (
-                    <>
-                      <X className="h-4 w-4 mr-1" />
-                      Cancel
-                    </>
-                  ) : (
-                    <>
-                      <Edit className="h-4 w-4 mr-1" />
-                      Edit
-                    </>
-                  )}
-                </button>
+                {!isEditing && (
+                  <button
+                    onClick={handleEdit}
+                    className="flex items-center text-primary-600 hover:text-primary-700"
+                  >
+                    <Edit className="h-4 w-4 mr-1" />
+                    Edit
+                  </button>
+                )}
               </div>
               
               <div className="space-y-4">
@@ -492,76 +580,39 @@ const Profile = () => {
                   </label>
                   <div className="flex items-center">
                     <User className="h-4 w-4 text-gray-400 mr-2 flex-shrink-0" />
-                    {isEditingDisplayName ? (
-                      <>
-                        <input
-                          type="text"
-                          value={newDisplayName}
-                          onChange={(e) => setNewDisplayName(e.target.value)}
-                          className="flex-1 text-gray-900 border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent mb-2"
-                          placeholder="Enter your display name"
-                        />
-                        <input
-                          type="text"
-                          value={newMobile}
-                          onChange={(e) => setNewMobile(e.target.value)}
-                          className="flex-1 text-gray-900 border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent mb-2"
-                          placeholder="Enter your mobile number"
-                        />
-                      </>
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        value={newDisplayName}
+                        onChange={(e) => setNewDisplayName(e.target.value)}
+                        className="flex-1 text-gray-900 border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent"
+                        placeholder="Enter your display name"
+                      />
                     ) : (
-                      <div className="flex flex-col space-y-1">
-                        <div>
-                          <span className="text-gray-600 text-sm font-medium">Display Name: </span>
-                          <span className="text-gray-900 font-medium">{getUserDisplayName()}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-600 text-sm font-medium">Mobile: </span>
-                          <span className="text-gray-900 font-medium">{userProfile?.phoneNumber || 'N/A'}</span>
-                        </div>
-                      </div>
+                      <span className="text-gray-900 font-medium">{getUserDisplayName()}</span>
                     )}
                   </div>
-                  {!isEditingDisplayName && (
-                    <button
-                      onClick={handleEditDisplayName}
-                      className="mt-2 text-sm text-primary-600 hover:text-primary-700 flex items-center"
-                      disabled={isUpdatingDisplayName}
-                    >
-                      <Edit className="h-3 w-3 mr-1" />
-                      Edit
-                    </button>
-                  )}
                 </div>
                 
-                {isEditingDisplayName && (
-                  <div className="flex justify-end space-x-2 pt-4">
-                    <button
-                      onClick={handleCancelDisplayName}
-                      className="btn-outline"
-                      disabled={isUpdatingDisplayName}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveDisplayName}
-                      className="btn-primary flex items-center"
-                      disabled={isUpdatingDisplayName}
-                    >
-                      {isUpdatingDisplayName ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                          Saving...
-                        </>
-                      ) : (
-                        <>
-                          <Save className="h-4 w-4 mr-1" />
-                          Save Display Name
-                        </>
-                      )}
-                    </button>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Mobile Number
+                  </label>
+                  <div className="flex items-center">
+                    <User className="h-4 w-4 text-gray-400 mr-2 flex-shrink-0" />
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        value={newMobile}
+                        onChange={(e) => setNewMobile(e.target.value)}
+                        className="flex-1 text-gray-900 border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent"
+                        placeholder="Enter your mobile number"
+                      />
+                    ) : (
+                      <span className="text-gray-900 font-medium">{userProfile?.phoneNumber || 'N/A'}</span>
+                    )}
                   </div>
-                )}
+                </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -596,16 +647,16 @@ const Profile = () => {
                     <button
                       onClick={handleCancelEdit}
                       className="btn-outline"
-                      disabled={isUpdatingEmail}
+                      disabled={isUpdatingProfile}
                     >
                       Cancel
                     </button>
                     <button
-                      onClick={handleSaveEmail}
+                      onClick={handleSaveProfile}
                       className="btn-primary flex items-center"
-                      disabled={isUpdatingEmail}
+                      disabled={isUpdatingProfile}
                     >
-                      {isUpdatingEmail ? (
+                      {isUpdatingProfile ? (
                         <>
                           <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                           Saving...
@@ -621,13 +672,23 @@ const Profile = () => {
                 )}
 
                 {showOtpInput && (
-                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="mt-4 p-4 bg-yellow-50 border-2 border-yellow-400 rounded-lg">
                     <div className="flex items-center mb-3">
-                      <CheckCircle className="h-5 w-5 text-blue-600 mr-2" />
-                      <h4 className="font-medium text-blue-900">Verify New Email</h4>
+                      <span className="text-2xl mr-2">⚠️</span>
+                      <h4 className="font-bold text-yellow-900">VERIFY YOUR NEW EMAIL ADDRESS</h4>
                     </div>
-                    <p className="text-sm text-blue-700 mb-4">
-                      We've sent a verification code to <strong>{newEmail}</strong>. Please enter it below to complete the email update.
+                    <div className="bg-yellow-100 p-3 rounded mb-4">
+                      <p className="text-sm font-semibold text-yellow-900 mb-2">
+                        ⚠️ IMPORTANT: You must verify your new email address!
+                      </p>
+                      <ul className="text-sm text-yellow-800 list-disc list-inside space-y-1">
+                        <li>Your messages will <strong>NOT be delivered</strong> if email is not verified</li>
+                        <li>You will <strong>NOT be able to log in</strong> until email is verified</li>
+                        <li>You may <strong>lose access to your account</strong> if email is not verified</li>
+                      </ul>
+                    </div>
+                    <p className="text-sm text-yellow-800 mb-4">
+                      We've sent a verification code to <strong className="text-yellow-900">{newEmail}</strong>. Please enter it below to complete the email update.
                     </p>
                     <div className="space-y-3">
                       <div>
@@ -642,6 +703,16 @@ const Profile = () => {
                           placeholder="Enter 6-digit verification code"
                           maxLength="6"
                         />
+                        <button
+                          type="button"
+                          onClick={handleResendEmailVerificationCode}
+                          className="mt-2 text-sm text-primary-600 hover:text-primary-700 underline"
+                        >
+                          Didn't receive code? Resend verification code
+                        </button>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Rate limit: Maximum 3 codes per 15 minutes
+                        </p>
                       </div>
                       <div className="flex justify-end space-x-2">
                         <button

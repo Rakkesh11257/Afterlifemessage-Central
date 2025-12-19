@@ -43,6 +43,33 @@ api.interceptors.request.use(
   }
 );
 
+// Handle 401 responses - user not found or session invalid
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401) {
+      // If error message indicates user not found, clear cache and sign out
+      const errorMessage = error.response?.data?.error || error.message || '';
+      if (errorMessage.includes('not found') || errorMessage.includes('not found in Cognito')) {
+        console.log('User not found in backend, clearing cache and signing out');
+        try {
+          const { Auth } = await import('aws-amplify');
+          await Auth.signOut();
+          // Clear localStorage cache
+          localStorage.clear();
+          // Redirect to login if we're in browser
+          if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+            window.location.href = '/login';
+          }
+        } catch (signOutError) {
+          console.error('Error signing out after 401:', signOutError);
+        }
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Enhanced media validation and processing
 class MediaProcessor {
   // Validate file type and size
@@ -390,13 +417,13 @@ export const messageAPI = {
 
   // Get user profile
   getUserProfile: async () => {
-    const response = await api.get('/profile');
+    const response = await api.get('/user/profile');
     return response.data;
   },
 
   // Update user profile
   updateUserProfile: async (profileData) => {
-    const response = await api.put('/profile', profileData);
+    const response = await api.put('/user/profile', profileData);
     return response.data;
   },
 

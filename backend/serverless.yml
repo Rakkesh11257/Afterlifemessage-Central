@@ -46,6 +46,7 @@ provider:
     TWILIO_ACCOUNT_SID: ${ssm:/afterlifemessage/${self:provider.stage}/twilio-account-sid, true}
     TWILIO_AUTH_TOKEN: ${ssm:/afterlifemessage/${self:provider.stage}/twilio-auth-token, true}
     TWILIO_WHATSAPP_NUMBER: ${ssm:/afterlifemessage/${self:provider.stage}/twilio-whatsapp-number, true}
+    COGNITO_USER_POOL_ID: ${ssm:/afterlifemessage/${self:provider.stage}/cognito-user-pool-id, true}
 
   iamRoleStatements:
     - Effect: Allow
@@ -79,8 +80,17 @@ provider:
         - ssm:GetParametersByPath
       Resource:
         - arn:aws:ssm:${self:provider.region}:*:parameter/afterlifemessage/${self:provider.stage}/*
+    # Allow Lambda to access Cognito User Pool
+    - Effect: Allow
+      Action:
+        - cognito-idp:AdminGetUser
+      Resource:
+        - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
 
 functions:
+  # Cognito authorizer (defined once, used by multiple functions)
+  # Note: This is referenced in individual function events
+
   postConfirmation:
     handler: functions/migrateUser.handler
     environment:
@@ -114,6 +124,8 @@ functions:
           path: /media/{messageId}
           method: get
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   createMessage:
@@ -132,6 +144,8 @@ functions:
           path: /messages
           method: post
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   updateMessage:
@@ -150,6 +164,8 @@ functions:
           path: /messages/{messageId}
           method: put
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   getUploadUrl:
@@ -161,6 +177,8 @@ functions:
           path: /upload-url
           method: post
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
 
@@ -173,6 +191,8 @@ functions:
           path: /messages
           method: get
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   getMessage:
@@ -184,6 +204,8 @@ functions:
           path: /messages/{messageId}
           method: get
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   deleteMessage:
@@ -196,6 +218,8 @@ functions:
           path: /messages/{messageId}
           method: delete
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   updateUserProfile:
@@ -207,17 +231,22 @@ functions:
           path: /user/profile
           method: put
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   getUserProfile:
     handler: functions/getUserProfile.handler
     environment:
       USERS_TABLE: ${self:provider.environment.USERS_TABLE}
+      COGNITO_USER_POOL_ID: ${self:provider.environment.COGNITO_USER_POOL_ID}
     events:
       - http:
           path: /user/profile
           method: get
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   handlePayment:
@@ -240,6 +269,8 @@ functions:
           path: /payment/create
           method: post
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   updateUserActivity:
@@ -251,6 +282,8 @@ functions:
           path: /activity
           method: post
           cors: true
+          authorizer:
+            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
           integration: lambda-proxy
 
   testWhatsApp:

@@ -50,17 +50,31 @@ exports.handler = async (event) => {
     let body;
     if (typeof event.body === 'string') {
       try {
-        body = JSON.parse(event.body);
+        // Check if body is base64 encoded (API Gateway sometimes does this)
+        let bodyString = event.body;
+        if (event.isBase64Encoded) {
+          bodyString = Buffer.from(event.body, 'base64').toString('utf-8');
+        }
+        body = JSON.parse(bodyString);
       } catch (parseError) {
         console.error('Malformed JSON body:', event.body);
-        return {
-          statusCode: 400,
-          headers: getCorsHeaders(event),
-          body: JSON.stringify({
-            error: 'Malformed JSON in request body',
-            details: parseError.message
-          })
-        };
+        console.error('Parse error:', parseError);
+        // Try to decode as base64 if direct parse failed
+        try {
+          const decodedBody = Buffer.from(event.body, 'base64').toString('utf-8');
+          body = JSON.parse(decodedBody);
+          console.log('Successfully decoded base64 body');
+        } catch (base64Error) {
+          console.error('Base64 decode also failed:', base64Error);
+          return {
+            statusCode: 400,
+            headers: getCorsHeaders(event),
+            body: JSON.stringify({
+              error: 'Malformed JSON in request body',
+              details: parseError.message
+            })
+          };
+        }
       }
     } else if (typeof event.body === 'object' && event.body !== null) {
       body = event.body;
@@ -84,7 +98,6 @@ exports.handler = async (event) => {
         userId,
         email: userEmail,
         displayName: displayName || null,
-        name: displayName || null, // Store as both displayName and name
         phoneNumber: phoneNumber || null,
         lastActive: now,
         createdAt: now,

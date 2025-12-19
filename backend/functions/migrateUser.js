@@ -12,13 +12,15 @@ exports.handler = async (event, context) => {
     throw new Error('Missing required user attributes');
   }
 
+  const now = new Date().toISOString();
   const userItem = {
     userId: userAttributes.sub,
     email: userAttributes.email,
-    displayName: userAttributes.name || '',
-    phoneNumber: userAttributes.phone_number || '',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    displayName: userAttributes.name || null,
+    phoneNumber: userAttributes.phone_number || null,
+    createdAt: now,
+    updatedAt: now,
+    lastActive: now,
     // Add any other attributes you want to store
   };
 
