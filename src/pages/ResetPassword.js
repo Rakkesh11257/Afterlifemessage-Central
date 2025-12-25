@@ -27,15 +27,17 @@ const ResetPassword = () => {
       setLoading(true);
       await Auth.forgotPassword(email);
       setStep('code');
-      toast.success('Verification code sent to your email!');
+      toast.success('Verification code sent to your email! Please check your inbox.');
     } catch (error) {
       console.error('Error sending code:', error);
       if (error.code === 'LimitExceededException') {
-        toast.error('Too many attempts. Please try again later.');
+        toast.error('Too many attempts. Please wait a few minutes before trying again.');
       } else if (error.code === 'UserNotFoundException') {
-        toast.error('No account found with this email address.');
+        toast.error('No account found with this email address. Please check your email and try again.');
+      } else if (error.code === 'InvalidParameterException') {
+        toast.error('Invalid email address. Please enter a valid email.');
       } else {
-        toast.error('Failed to send verification code. Please try again.');
+        toast.error(error.message || 'Failed to send verification code. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -49,19 +51,41 @@ const ResetPassword = () => {
       return;
     }
 
+    if (!newPassword || !confirmPassword) {
+      toast.error('Please enter and confirm your new password');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      toast.error('Passwords do not match');
+      return;
+    }
+
+    const passwordValidation = validatePassword(newPassword);
+    if (!passwordValidation.isValid) {
+      toast.error('Password does not meet requirements. Please check the validation rules below.');
+      return;
+    }
+
     try {
       setLoading(true);
       await Auth.forgotPasswordSubmit(email, code, newPassword);
-      toast.success('Password reset successfully!');
-      navigate('/login');
+      toast.success('Password reset successfully! Please sign in with your new password.');
+      setTimeout(() => {
+        navigate('/login');
+      }, 1500);
     } catch (error) {
       console.error('Error resetting password:', error);
       if (error.code === 'CodeMismatchException') {
         toast.error('Invalid verification code. Please check and try again.');
+      } else if (error.code === 'ExpiredCodeException') {
+        toast.error('Verification code has expired. Please request a new one.');
       } else if (error.code === 'InvalidPasswordException') {
         toast.error('Password must be at least 8 characters with uppercase, lowercase, and numbers.');
+      } else if (error.code === 'LimitExceededException') {
+        toast.error('Too many attempts. Please try again later.');
       } else {
-        toast.error('Failed to reset password. Please try again.');
+        toast.error(error.message || 'Failed to reset password. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -94,11 +118,11 @@ const ResetPassword = () => {
         {/* Header */}
         <div className="text-center">
           <button
-            onClick={() => navigate('/profile')}
+            onClick={() => navigate(-1)}
             className="flex items-center text-gray-600 hover:text-gray-900 mb-4 mx-auto"
           >
             <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Profile
+            Back
           </button>
           
           <div className="mx-auto h-12 w-12 bg-primary-100 rounded-full flex items-center justify-center">

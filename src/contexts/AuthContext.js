@@ -68,6 +68,9 @@ export const AuthProvider = ({ children }) => {
   const signIn = async (email, password) => {
     try {
       const user = await Auth.signIn(email, password);
+      console.log('SignIn successful, user object:', user);
+      console.log('User attributes:', user.attributes);
+      
       // Cognito returns a user object even if not confirmed, so check status
       if (user.challengeName === 'NEW_PASSWORD_REQUIRED') {
         return { success: false, error: 'New password required. Please reset your password.' };
@@ -76,17 +79,27 @@ export const AuthProvider = ({ children }) => {
         return { success: false, error: 'MFA required. Please complete multi-factor authentication.' };
       }
       
-      // Get fresh user data with bypassCache to ensure we have the latest email_verified status
-      // This is important after email verification to avoid stale cached data
-      const freshUser = await Auth.currentAuthenticatedUser({ bypassCache: true });
+      // Use attributes directly from the user object returned by signIn
+      // The user object should have attributes if sign-in was successful
+      const userAttributes = user.attributes || {};
       
-      // Check if email is verified - this handles both initial signup and email changes
+      // Check if email is verified
       // email_verified can be boolean true/false or string "true"/"false"
-      const emailVerified = freshUser.attributes?.email_verified;
-      const isEmailVerified = emailVerified === true || emailVerified === 'true';
+      // If email_verified is undefined, assume the user is verified (confirmed users might not have this attribute)
+      const emailVerified = userAttributes.email_verified;
+      const isEmailUnverified = emailVerified === false || emailVerified === 'false';
       
-      if (!isEmailVerified) {
-        const currentEmail = freshUser.attributes?.email || user.attributes?.email;
+      console.log('Email verified check:', { 
+        emailVerified, 
+        isEmailUnverified,
+        userAttributes,
+        userUsername: user.username
+      });
+      
+      // Only block sign-in if email_verified is explicitly false
+      // If it's undefined or true, allow sign-in to proceed
+      if (isEmailUnverified) {
+        const currentEmail = userAttributes.email || user.username;
         return { 
           success: false, 
           error: `Your email address (${currentEmail}) needs to be verified. Please check your email for the verification code and verify your email address.`, 
@@ -96,19 +109,42 @@ export const AuthProvider = ({ children }) => {
         };
       }
       
-      setUser(freshUser);
+      setUser(user);
       // Ensure user profile exists in our backend
       try {
         await messageAPI.getUserProfile();
       } catch (error) {
-        // Optionally log error for monitoring
+        console.error('Error getting user profile after sign in:', error);
+        // Don't fail sign in if profile fetch fails
       }
       return { success: true };
     } catch (error) {
+      console.error('SignIn error:', error);
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
+      console.error('Full error object:', JSON.stringify(error, null, 2));
+      
+      // Handle specific Cognito error codes
       if (error.code === 'UserNotConfirmedException') {
-        // User is not confirmed
         return { success: false, error: 'Your account is not confirmed. Please check your email for the confirmation code.', notConfirmed: true };
       }
+      
+      if (error.code === 'NotAuthorizedException') {
+        return { success: false, error: 'Incorrect email or password. Please check your credentials and try again.' };
+      }
+      
+      if (error.code === 'UserNotFoundException') {
+        return { success: false, error: 'No account found with this email address. Please sign up first.' };
+      }
+      
+      if (error.code === 'InvalidParameterException') {
+        return { success: false, error: 'Invalid email or password format. Please check your credentials.' };
+      }
+      
+      if (error.code === 'PasswordResetRequiredException') {
+        return { success: false, error: 'Password reset required. Please reset your password.' };
+      }
+      
       // Handle case where user changed email but hasn't verified - Cognito might reject login
       if (error.message && error.message.includes('email')) {
         return { 
@@ -118,7 +154,28 @@ export const AuthProvider = ({ children }) => {
           requiresEmailVerification: true
         };
       }
-      return { success: false, error: error.message };
+      
+      // Log the full error for debugging
+      console.error('SignIn error details:', {
+        code: error.code,
+        message: error.message,
+        name: error.name,
+        stack: error.stack,
+        fullError: error,
+        toString: error.toString()
+      });
+      
+      // Extract error message - try multiple sources
+      let errorMessage = 'Sign in failed. Please check your credentials and try again.';
+      if (error.message) {
+        errorMessage = error.message;
+      } else if (error.code) {
+        errorMessage = `Sign in failed: ${error.code}`;
+      } else if (error.toString && error.toString() !== '[object Object]') {
+        errorMessage = error.toString();
+      }
+      
+      return { success: false, error: errorMessage };
     }
   };
 

@@ -1,5 +1,12 @@
 import { Amplify } from 'aws-amplify';
 
+// Determine if we're on localhost (non-HTTPS) for Safari compatibility
+// Safari blocks secure cookies on localhost, so we need secure: false for local development
+const isLocalhost = typeof window !== 'undefined' && 
+  (window.location.hostname === 'localhost' || 
+   window.location.hostname === '127.0.0.1' ||
+   (window.location.hostname.startsWith('192.168.') && window.location.protocol === 'http:'));
+
 const awsconfig = {
   Auth: {
     region: 'ap-south-1',
@@ -11,7 +18,7 @@ const awsconfig = {
       domain: 'localhost',
       path: '/',
       expires: 365,
-      secure: true
+      secure: !isLocalhost // Safari requires secure: false for localhost (http://)
     }
   },
   API: {

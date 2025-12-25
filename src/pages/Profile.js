@@ -45,7 +45,6 @@ const Profile = () => {
 
   useEffect(() => {
     if (userProfile) {
-      console.log('userProfile:', userProfile);
       setNewMobile(userProfile.phoneNumber || '');
     }
   }, [userProfile]);
@@ -159,10 +158,8 @@ const Profile = () => {
           displayName: newDisplayName.trim(),
           phoneNumber: phoneNumber
         };
-        console.log('Updating user profile with payload:', payload);
         try {
           await messageAPI.updateUserProfile(payload);
-          console.log('Profile updated in DynamoDB successfully');
         } catch (updateError) {
           console.error('Error updating profile in DynamoDB:', updateError);
           // Don't fail the whole flow if DynamoDB update fails - Cognito is already updated
@@ -201,9 +198,8 @@ const Profile = () => {
         // Explicitly request verification code for the new email attribute
         try {
           await Auth.verifyUserAttribute(currentUser, 'email');
-          console.log('Verification code sent to new email:', newEmail);
         } catch (verifyError) {
-          console.log('Verification code send attempt:', verifyError.message || verifyError);
+          // Verification code request failed, but continue with the flow
         }
 
         // Refresh user object to get updated email_verified status
@@ -211,11 +207,6 @@ const Profile = () => {
         
         // Get fresh user data with bypassCache to see actual verification status
         const updatedUser = await Auth.currentAuthenticatedUser({ bypassCache: true });
-        console.log('Email after change (fresh data):', {
-          email: updatedUser.attributes.email,
-          email_verified: updatedUser.attributes.email_verified,
-          userStatus: updatedUser.attributes['cognito:user_status']
-        });
 
         // Check if email is actually verified
         const isVerified = updatedUser.attributes.email_verified === true || updatedUser.attributes.email_verified === 'true';
@@ -441,24 +432,6 @@ const Profile = () => {
     return emailVerified === true || emailVerified === 'true';
   };
 
-  // Debug function to log user attributes
-  const logUserAttributes = () => {
-    console.log('User object:', user);
-    console.log('User attributes:', user?.attributes);
-    console.log('Available attributes:', Object.keys(user?.attributes || {}));
-    console.log('User email:', getUserEmail());
-    console.log('Email verified:', isEmailVerified());
-    console.log('getUserEmail() result:', getUserEmail());
-    console.log('user?.attributes?.email:', user?.attributes?.email);
-    console.log('user?.username:', user?.username);
-  };
-
-  // Log user attributes on component mount for debugging
-  useEffect(() => {
-    if (user) {
-      logUserAttributes();
-    }
-  }, [user]);
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
@@ -813,44 +786,6 @@ const Profile = () => {
                 </div>
               </div>
             </div>
-            {/* Debug Section - Remove in production */}
-            {process.env.NODE_ENV === 'development' && (
-              <div className="card">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                  <Shield className="h-5 w-5 mr-2 text-primary-600" />
-                  Debug Information (Development Only)
-                </h3>
-                <div className="space-y-2 text-sm">
-                  <div>
-                    <strong>Raw Values:</strong>
-                    <div className="bg-gray-100 p-2 rounded mt-1 text-xs">
-                      <div>user?.attributes?.email: "{user?.attributes?.email}"</div>
-                      <div>user?.username: "{user?.username}"</div>
-                      <div>getUserEmail(): "{getUserEmail()}"</div>
-                      <div>getUserDisplayName(): "{getUserDisplayName()}"</div>
-                    </div>
-                  </div>
-                  <div>
-                    <strong>User Object:</strong>
-                    <pre className="bg-gray-100 p-2 rounded mt-1 text-xs overflow-auto">
-                      {JSON.stringify(user, null, 2)}
-                    </pre>
-                  </div>
-                  <div>
-                    <strong>User Attributes:</strong>
-                    <pre className="bg-gray-100 p-2 rounded mt-1 text-xs overflow-auto">
-                      {JSON.stringify(user?.attributes, null, 2)}
-                    </pre>
-                  </div>
-                  <div>
-                    <strong>Available Attributes:</strong>
-                    <pre className="bg-gray-100 p-2 rounded mt-1 text-xs overflow-auto">
-                      {JSON.stringify(Object.keys(user?.attributes || {}), null, 2)}
-                    </pre>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

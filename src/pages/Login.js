@@ -94,6 +94,7 @@ const Login = () => {
         }
       } else {
         const result = await signIn(data.email, data.password);
+        console.log('SignIn result:', result);
         if (result.success) {
           navigate('/dashboard');
         } else if (result.notConfirmed || result.requiresEmailVerification) {
@@ -122,7 +123,10 @@ const Login = () => {
           const errorMsg = result.error || 'Your email needs to be verified. Please check your email for the verification code.';
           toast.error(errorMsg, { duration: 6000 });
         } else {
-          toast.error(result.error || 'Sign in failed');
+          // Show the specific error message from the result
+          const errorMessage = result.error || 'Sign in failed. Please check your credentials and try again.';
+          console.error('Sign in failed:', errorMessage, result);
+          toast.error(errorMessage);
         }
       }
     } catch (error) {
@@ -486,6 +490,18 @@ const Login = () => {
                 <p className="mt-1 text-sm text-red-600">{errors.password.message}</p>
               )}
             </div>
+            
+            {!isSignUp && (
+              <div className="flex items-center justify-end">
+                <Link
+                  to="/reset-password"
+                  className="text-sm text-primary-600 hover:text-primary-500 font-medium"
+                >
+                  Forgot your password?
+                </Link>
+              </div>
+            )}
+            
             {isSignUp && (
               <div>
                 <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700">
