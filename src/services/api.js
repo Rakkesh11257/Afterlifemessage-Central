@@ -180,12 +180,36 @@ export const messageAPI = {
         console.log('🔍 DEBUG - Large media detected, processing media...');
         const largeFiles = [];
 
-        if (messageData.audioBlob && messageData.audioBlob.size > 10 * 1024 * 1024) {
-          largeFiles.push({ blob: messageData.audioBlob, type: 'audio' });
-        } else if (messageData.audioBlob) {
-          const processedAudio = await MediaProcessor.processMedia(messageData.audioBlob, 'audio');
-          cleanMessageData.audioBlob = processedAudio.data;
-          cleanMessageData.mediaMimeType = processedAudio.type;
+        // Process audio blob
+        if (messageData.audioBlob) {
+          // Check if it's already a string (base64 or S3 key)
+          if (typeof messageData.audioBlob === 'string') {
+            // Already processed, use as-is
+            cleanMessageData.audioBlob = messageData.audioBlob;
+            console.log('🔍 DEBUG - Audio blob is already a string (base64 or S3 key)');
+          } else if (messageData.audioBlob instanceof Blob || (messageData.audioBlob.size !== undefined)) {
+            // It's a Blob object, process it
+            const blobSize = messageData.audioBlob.size || 0;
+            if (blobSize > 10 * 1024 * 1024) {
+              // Large file, upload to S3
+              largeFiles.push({ blob: messageData.audioBlob, type: 'audio' });
+              console.log('🔍 DEBUG - Audio blob is large, will upload to S3');
+            } else {
+              // Small file, convert to base64
+              try {
+                const processedAudio = await MediaProcessor.processMedia(messageData.audioBlob, 'audio');
+                cleanMessageData.audioBlob = processedAudio.data;
+                cleanMessageData.mediaMimeType = processedAudio.type;
+                console.log('🔍 DEBUG - Audio blob processed to base64, size:', processedAudio.data.length);
+              } catch (processError) {
+                console.error('🔍 DEBUG - Error processing audio blob:', processError);
+                throw new Error(`Failed to process audio: ${processError.message}`);
+              }
+            }
+          } else {
+            console.error('🔍 DEBUG - Invalid audioBlob type:', typeof messageData.audioBlob, messageData.audioBlob);
+            throw new Error('Invalid audio data format. Expected Blob or base64 string.');
+          }
         }
 
         if (messageData.videoBlob && messageData.videoBlob.size > 10 * 1024 * 1024) {

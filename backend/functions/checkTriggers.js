@@ -1,23 +1,18 @@
 const AWS = require('aws-sdk');
-const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const { sendWhatsAppMessage, generatePresignedUrl } = require('../utils/sendWhatsAppMessage');
 const { decryptText, decryptBuffer } = require('../utils/encryption');
 
 const dynamodb = new AWS.DynamoDB.DocumentClient();
 const s3 = new AWS.S3();
+const ses = new AWS.SES({ region: 'ap-south-1' }); // Initialize SES client
 
-// Zepto Mail configuration
-const ZEPTO_SMTP_SERVER = 'smtp.zeptomail.in';
-const ZEPTO_PORT = 587;
-const ZEPTO_USERNAME = 'emailapikey';
-const ZEPTO_PASSWORD = process.env.ZEPTO_PASSWORD;
-const ZEPTO_FROM_EMAIL = process.env.ZEPTO_FROM_EMAIL || 'noreply@afterlifemessage.in';
+// AWS SES configuration
+const SES_FROM_EMAIL = 'no-reply@cloudmastery.in'; // Fixed sender email
 
 const MESSAGES_TABLE = process.env.DYNAMODB_TABLE;
 const USERS_TABLE = process.env.USERS_TABLE;
 const S3_BUCKET = process.env.S3_BUCKET;
-const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL;
 const MEDIA_JWT_SECRET = process.env.MEDIA_JWT_SECRET || 'media-secret-key';
 
 // Helper: generate signed token for media access
@@ -261,61 +256,59 @@ async function deliverMessage(message) {
       }
     }
 
-    // Prepare email attachments if needed
-    let attachments = [];
-    if ((message.type === 'audio' || message.type === 'video' || message.type === 'files') && message.s3Key) {
-      const s3Obj = await s3.getObject({
-        Bucket: S3_BUCKET,
-        Key: message.s3Key
-      }).promise();
-      let buffer = s3Obj.Body;
-      let filename = '';
-      let contentType = 'application/octet-stream';
-      if (message.type === 'audio') {
-        // Decrypt the buffer for audio
-        buffer = decryptBuffer(buffer);
-        filename = `message-${message.messageId}.mp3`;
-        contentType = 'audio/mpeg';
-      } else if (message.type === 'video') {
-        filename = `message-${message.messageId}.mp4`;
-        contentType = 'video/mp4';
-      } else if (message.type === 'files') {
-        filename = `message-${message.messageId}.zip`;
-        contentType = 'application/zip';
-      }
-      attachments.push({
-        filename,
-        content: buffer,
-        contentType
-      });
-    }
-    // For text messages, use plain text
-    // (Removed buggy block that overwrites decryptedContent)
+    // Media files are NOT attached to emails - they remain encrypted in S3
+    // Users access media via presigned URLs (generated above) that go through getDecryptedMedia endpoint
+    // The getDecryptedMedia endpoint decrypts media on-the-fly when accessed
+    // This ensures media stays encrypted in S3 until the user clicks the link
 
-    // Send email via Zepto Mail SMTP
-    const transporter = nodemailer.createTransport({
-      host: ZEPTO_SMTP_SERVER,
-      port: ZEPTO_PORT,
-      secure: false, // true for 465, false for other ports
-      auth: {
-        user: ZEPTO_USERNAME,
-        pass: ZEPTO_PASSWORD
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
+    // Send email via AWS SES
+    const htmlBody = generateEmailHtml(decryptedContent, audioUrl, videoUrl, audioDownloadUrl, videoDownloadUrl, filesDownloadUrl, message.type, senderName);
+    const textBody = generateEmailText(decryptedContent, audioUrl, videoUrl, audioDownloadUrl, videoDownloadUrl, filesDownloadUrl, message.type, senderName);
+    
+    // Debug: Log email config
+    console.log('AWS SES Config:', {
+      fromEmail: SES_FROM_EMAIL,
+      recipientEmail: message.recipientEmail,
+      messageType: message.type,
+      hasMedia: !!(message.s3Key || (message.files && message.files.length > 0)),
+      audioUrl: audioUrl ? 'generated' : null,
+      videoUrl: videoUrl ? 'generated' : null,
+      filesUrl: filesDownloadUrl ? 'generated' : null,
+      note: 'Media remains encrypted in S3, accessed via URLs that decrypt on-the-fly'
     });
-
-    const mailOptions = {
-      from: `"AfterLifeMessage" <${ZEPTO_FROM_EMAIL}>`,
-      to: message.recipientEmail,
-      subject: `You have received a message from ${senderName} via AfterLifeMessage.in`,
-      html: generateEmailHtml(decryptedContent, audioUrl, videoUrl, audioDownloadUrl, videoDownloadUrl, filesDownloadUrl, message.type, senderName),
-      text: generateEmailText(decryptedContent, audioUrl, videoUrl, audioDownloadUrl, videoDownloadUrl, filesDownloadUrl, message.type, senderName),
-      attachments
+    
+    // Prepare SES email parameters
+    // Media files are NOT attached - they remain encrypted in S3
+    // Users access media via presigned URLs that decrypt on-the-fly via getDecryptedMedia endpoint
+    const sesParams = {
+      Source: `"AfterLifeMessage" <${SES_FROM_EMAIL}>`,
+      Destination: {
+        ToAddresses: [message.recipientEmail]
+      },
+      Message: {
+        Subject: {
+          Data: `You have received a message from ${senderName} via AfterLifeMessage.in`,
+          Charset: 'UTF-8'
+        },
+        Body: {
+          Html: {
+            Data: htmlBody,
+            Charset: 'UTF-8'
+          },
+          Text: {
+            Data: textBody,
+            Charset: 'UTF-8'
+          }
+        }
+      }
     };
-
-    await transporter.sendMail(mailOptions);
+    
+    // Send email via SES (no attachments - media accessed via URLs)
+    const result = await ses.sendEmail(sesParams).promise();
+    console.log('AWS SES email sent successfully:', {
+      messageId: result.MessageId,
+      mediaAccess: message.type !== 'text' ? 'via presigned URLs (encrypted in S3)' : 'text only'
+    });
     
     return { success: true };
   } catch (error) {
@@ -376,6 +369,66 @@ function generateEmailHtml(content, audioUrl, videoUrl, audioDownloadUrl, videoD
   `;
   
   return baseHtml;
+}
+
+// Helper function to build raw email with attachments (MIME format)
+function buildRawEmailWithAttachments(from, to, subject, htmlBody, textBody, attachments) {
+  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+  const nl = '\r\n';
+  
+  let rawEmail = `From: ${from}${nl}`;
+  rawEmail += `To: ${to}${nl}`;
+  rawEmail += `Subject: ${subject}${nl}`;
+  rawEmail += `MIME-Version: 1.0${nl}`;
+  rawEmail += `Content-Type: multipart/mixed; boundary="${boundary}"${nl}`;
+  rawEmail += nl;
+  
+  // Add multipart/alternative for HTML and text
+  const altBoundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+  rawEmail += `--${boundary}${nl}`;
+  rawEmail += `Content-Type: multipart/alternative; boundary="${altBoundary}"${nl}`;
+  rawEmail += nl;
+  
+  // Text part
+  rawEmail += `--${altBoundary}${nl}`;
+  rawEmail += `Content-Type: text/plain; charset=UTF-8${nl}`;
+  rawEmail += `Content-Transfer-Encoding: 7bit${nl}`;
+  rawEmail += nl;
+  rawEmail += textBody;
+  rawEmail += nl;
+  
+  // HTML part
+  rawEmail += `--${altBoundary}${nl}`;
+  rawEmail += `Content-Type: text/html; charset=UTF-8${nl}`;
+  rawEmail += `Content-Transfer-Encoding: 7bit${nl}`;
+  rawEmail += nl;
+  rawEmail += htmlBody;
+  rawEmail += nl;
+  
+  // Close alternative boundary
+  rawEmail += `--${altBoundary}--${nl}`;
+  rawEmail += nl;
+  
+  // Add attachments
+  for (const attachment of attachments) {
+    rawEmail += `--${boundary}${nl}`;
+    rawEmail += `Content-Type: ${attachment.contentType || 'application/octet-stream'}; name="${attachment.filename}"${nl}`;
+    rawEmail += `Content-Disposition: attachment; filename="${attachment.filename}"${nl}`;
+    rawEmail += `Content-Transfer-Encoding: base64${nl}`;
+    rawEmail += nl;
+    
+    // Convert buffer to base64
+    const base64Content = attachment.content.toString('base64');
+    // Split into 76-character lines (RFC 2045)
+    const lines = base64Content.match(/.{1,76}/g) || [];
+    rawEmail += lines.join(nl);
+    rawEmail += nl;
+  }
+  
+  // Close main boundary
+  rawEmail += `--${boundary}--${nl}`;
+  
+  return rawEmail;
 }
 
 function generateEmailText(content, audioUrl, videoUrl, audioDownloadUrl, videoDownloadUrl, filesDownloadUrl, type, senderName) {

@@ -301,46 +301,68 @@ exports.handler = async (event) => {
 
     // Return the media
     if (presignedUrl) {
-      // Redirect for browser requests
+      // Redirect to presigned URL for browser requests (default behavior)
+      // Only return JSON if explicitly requested via Accept: application/json header
       const acceptHeader = (event.headers && (event.headers.Accept || event.headers.accept)) || '';
-      if (acceptHeader.includes('text/html')) {
+      
+      // If Accept header explicitly requests JSON, return JSON (for API clients)
+      if (acceptHeader.includes('application/json')) {
         return {
-          statusCode: 302,
+          statusCode: 200,
           headers: {
-            Location: presignedUrl,
-            ...headers
+            ...headers,
+            'Content-Type': 'application/json'
           },
-          body: ''
+          body: JSON.stringify({
+            presignedUrl,
+            mediaMimeType: message.mediaMimeType || getDefaultMimeType(type),
+            mediaFileName: message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`,
+            decrypted: usedDecryption
+          })
         };
       }
-      // Default: return JSON for API clients
+      
+      // Default: redirect to presigned URL for browser playback/download
       return {
-        statusCode: 200,
+        statusCode: 302,
         headers: {
-          ...headers,
-          'Content-Type': 'application/json'
+          Location: presignedUrl,
+          ...headers
         },
-        body: JSON.stringify({
-          presignedUrl,
-          mediaMimeType: message.mediaMimeType || getDefaultMimeType(type),
-          mediaFileName: message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`,
-          decrypted: usedDecryption
-        })
+        body: ''
       };
     } else {
-      // Only for small, decrypted files
+      // Only for small, decrypted files - return directly as audio/video/file
+      const acceptHeader = (event.headers && (event.headers.Accept || event.headers.accept)) || '';
+      const mimeType = message.mediaMimeType || getDefaultMimeType(type);
+      
+      // If explicitly requesting JSON (API client), return JSON
+      if (acceptHeader.includes('application/json')) {
+        return {
+          statusCode: 200,
+          headers: {
+            ...headers,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            mediaData: base64Data,
+            mediaMimeType: mimeType,
+            mediaFileName: message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`,
+            decrypted: usedDecryption
+          })
+        };
+      }
+      
+      // For browser requests, return the audio/video/file directly
       return {
         statusCode: 200,
         headers: {
           ...headers,
-          'Content-Type': 'application/json'
+          'Content-Type': mimeType,
+          'Content-Disposition': `inline; filename="${message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`}"`
         },
-        body: JSON.stringify({
-          mediaData: base64Data,
-          mediaMimeType: message.mediaMimeType || getDefaultMimeType(type),
-          mediaFileName: message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`,
-          decrypted: usedDecryption
-        })
+        isBase64Encoded: true,
+        body: base64Data
       };
     }
 

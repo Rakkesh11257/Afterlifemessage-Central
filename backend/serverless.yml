@@ -68,6 +68,11 @@ provider:
         - arn:aws:s3:::afterlifemessage-${self:provider.stage}/*
     - Effect: Allow
       Action:
+        - ses:SendEmail
+        - ses:SendRawEmail
+      Resource: "*"
+    - Effect: Allow
+      Action:
         - logs:CreateLogGroup
         - logs:CreateLogStream
         - logs:PutLogEvents
@@ -124,8 +129,8 @@ functions:
           path: /media/{messageId}
           method: get
           cors: true
-          authorizer:
-            arn: arn:aws:cognito-idp:ap-south-1:891377013673:userpool/ap-south-1_CRybCfDpw
+          # No authorizer - the function handles authentication via token in query string
+          # This allows public access via email links while still securing via JWT token
           integration: lambda-proxy
 
   createMessage:

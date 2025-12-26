@@ -1,10 +1,25 @@
 const twilio = require('twilio');
 const AWS = require('aws-sdk');
 
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const twilioClient = twilio(accountSid, authToken);
+// Lazy initialization of Twilio client (only when needed and credentials are available)
+let twilioClient = null;
 const twilioWhatsAppNumber = process.env.TWILIO_WHATSAPP_NUMBER || 'whatsapp:+14155238886'; // Default to sandbox
+
+function getTwilioClient() {
+  if (!twilioClient) {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    
+    // Only initialize if credentials are provided
+    if (accountSid && authToken && accountSid.startsWith('AC')) {
+      twilioClient = twilio(accountSid, authToken);
+    } else {
+      // Return null if credentials are not available
+      return null;
+    }
+  }
+  return twilioClient;
+}
 
 const s3 = new AWS.S3();
 const S3_BUCKET = process.env.S3_BUCKET;
@@ -35,6 +50,14 @@ function generatePresignedUrl(key, expiresIn = 3600) {
  * @param {Object} [options.templateVars] - Optional: Variables for template
  */
 async function sendWhatsAppMessage({ to, body, mediaUrl, template, templateVars }) {
+  const client = getTwilioClient();
+  
+  // If Twilio is not configured, skip WhatsApp delivery
+  if (!client) {
+    console.warn('Twilio credentials not configured. Skipping WhatsApp delivery.');
+    return { success: false, error: 'Twilio not configured' };
+  }
+  
   if (!to.startsWith('whatsapp:')) {
     to = 'whatsapp:' + to.replace(/^\+/, '');
   }
@@ -60,7 +83,7 @@ async function sendWhatsAppMessage({ to, body, mediaUrl, template, templateVars 
   }
 
   try {
-    const result = await twilioClient.messages.create(messageOptions);
+    const result = await client.messages.create(messageOptions);
     console.log('Twilio WhatsApp API response:', result);
     return result;
   } catch (error) {

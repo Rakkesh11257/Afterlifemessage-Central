@@ -142,62 +142,72 @@ exports.handler = async (event) => {
 
     // Handle media encryption and S3 upload
     if (requestBody.type === 'audio' && requestBody.audioBlob) {
-      let tempInputPath, tempOutputPath, finalAudioBuffer;
       try {
-        // Accept any audio format, convert to MP3 if needed
-        const mimeType = requestBody.mediaMimeType || 'audio/webm';
-        tempInputPath = `/tmp/input-audio-${messageId}`;
-        tempOutputPath = `/tmp/output-audio-${messageId}.mp3`;
-        // Write input audio to /tmp
-        fs.writeFileSync(tempInputPath, Buffer.from(requestBody.audioBlob, 'base64'));
-        if (mimeType !== 'audio/mp3') {
-          // Convert to MP3 using FFmpeg Lambda Layer
-          console.log(`[FFMPEG] Converting ${mimeType} to MP3 for message ${messageId}`);
-          await new Promise((resolve, reject) => {
-            const ffmpeg = spawn('/opt/ffmpeg/ffmpeg', [
-              '-y',
-              '-i', tempInputPath,
-              '-f', 'mp3',
-              tempOutputPath
-            ]);
-            ffmpeg.stdout && ffmpeg.stdout.on('data', (data) => console.log(`[FFMPEG STDOUT] ${data}`));
-            ffmpeg.stderr && ffmpeg.stderr.on('data', (data) => console.error(`[FFMPEG STDERR] ${data}`));
-            ffmpeg.on('close', (code) => code === 0 ? resolve() : reject(new Error('FFmpeg failed with code ' + code)));
-          });
-          finalAudioBuffer = fs.readFileSync(tempOutputPath);
-        } else {
-          // Already MP3, no conversion needed
-          finalAudioBuffer = fs.readFileSync(tempInputPath);
-        }
-        // Encrypt and upload to S3
-        const encryptedAudio = encryptBuffer(finalAudioBuffer);
-        const s3Key = `audio/${messageId}.enc`;
-        await s3.putObject({
-          Bucket: process.env.S3_BUCKET,
-          Key: s3Key,
-          Body: encryptedAudio,
-          ContentType: 'application/octet-stream',
-          Metadata: {
-            messageId: messageId,
-            type: 'audio',
-            originalMimeType: 'audio/mp3'
+        console.log('[AUDIO DEBUG] Processing audio:', {
+          audioBlobType: typeof requestBody.audioBlob,
+          audioBlobLength: typeof requestBody.audioBlob === 'string' ? requestBody.audioBlob.length : 'N/A',
+          audioBlobPreview: typeof requestBody.audioBlob === 'string' ? requestBody.audioBlob.substring(0, 50) : 'N/A',
+          isS3Key: typeof requestBody.audioBlob === 'string' && requestBody.audioBlob.startsWith('audio/'),
+          mediaMimeType: requestBody.mediaMimeType
+        });
+        
+        // Check if audioBlob is an S3 key (from direct upload) or base64 data
+        if (typeof requestBody.audioBlob === 'string' && requestBody.audioBlob.startsWith('audio/')) {
+          // Already uploaded to S3, use the existing key
+          message.s3Key = requestBody.audioBlob;
+          message.mediaMimeType = requestBody.mediaMimeType || 'audio/webm';
+          message.mediaFileName = `message-${messageId}.${(requestBody.mediaMimeType || 'audio/webm').split('/')[1] || 'webm'}`;
+          console.log('[S3 KEY] Using existing S3 key for audio:', requestBody.audioBlob);
+        } else if (typeof requestBody.audioBlob === 'string') {
+          // Base64 blob, process and upload
+          const mimeType = requestBody.mediaMimeType || 'audio/webm';
+          let finalAudioBuffer;
+          
+          try {
+            // Decode base64 audio
+            const audioBuffer = Buffer.from(requestBody.audioBlob, 'base64');
+            console.log('[AUDIO DEBUG] Decoded base64, buffer size:', audioBuffer.length);
+            
+            // For now, skip FFmpeg conversion (layer not available)
+            // Store audio as-is (encrypted) - can be converted later if needed
+            // TODO: Re-enable FFmpeg conversion when layer is available
+            finalAudioBuffer = audioBuffer;
+            
+            // Encrypt and upload to S3
+            const encryptedAudio = encryptBuffer(finalAudioBuffer);
+            const s3Key = `audio/${messageId}.enc`;
+            await s3.putObject({
+              Bucket: process.env.S3_BUCKET,
+              Key: s3Key,
+              Body: encryptedAudio,
+              ContentType: 'application/octet-stream',
+              Metadata: {
+                messageId: messageId,
+                type: 'audio',
+                originalMimeType: mimeType
+              }
+            }).promise();
+            message.s3Key = s3Key;
+            message.mediaMimeType = mimeType; // Keep original format
+            message.mediaFileName = `message-${messageId}.${mimeType.split('/')[1] || 'webm'}`;
+            console.log(`[S3 UPLOAD] Encrypted audio file stored for message ${messageId} (format: ${mimeType})`);
+          } catch (decodeError) {
+            console.error('[AUDIO ERROR] Failed to decode base64:', decodeError);
+            throw new Error(`Invalid audio data format: ${decodeError.message}`);
           }
-        }).promise();
-        message.s3Key = s3Key;
-        message.mediaMimeType = 'audio/mp3';
-        message.mediaFileName = `message-${messageId}.mp3`;
-        console.log(`[S3 UPLOAD] Encrypted MP3 audio file stored for message ${messageId}`);
+        } else {
+          // audioBlob is not a string (might be an object or null)
+          console.error('[AUDIO ERROR] Invalid audioBlob type:', typeof requestBody.audioBlob, requestBody.audioBlob);
+          throw new Error('Audio data must be a base64 string or S3 key');
+        }
       } catch (error) {
         console.error('Error processing audio:', error);
+        console.error('Error stack:', error.stack);
         return {
           statusCode: 500,
           headers,
           body: JSON.stringify({ error: 'Failed to process audio file', details: error.message })
         };
-      } finally {
-        // Clean up temp files
-        try { if (tempInputPath) fs.unlinkSync(tempInputPath); } catch (e) { console.warn('Failed to clean up input temp file:', e.message); }
-        try { if (tempOutputPath && fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath); } catch (e) { console.warn('Failed to clean up output temp file:', e.message); }
       }
     }
 
