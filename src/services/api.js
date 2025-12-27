@@ -83,7 +83,11 @@ class MediaProcessor {
 
     const allValidTypes = Object.values(validTypes).flat();
     
-    if (!allValidTypes.includes(file.type)) {
+    // Extract base MIME type (remove codecs and other parameters)
+    // e.g., "video/webm;codecs=vp8,opus" -> "video/webm"
+    const baseMimeType = file.type.split(';')[0].trim().toLowerCase();
+    
+    if (!allValidTypes.includes(baseMimeType)) {
       throw new Error(`Unsupported file type: ${file.type}`);
     }
 
@@ -212,12 +216,36 @@ export const messageAPI = {
           }
         }
 
-        if (messageData.videoBlob && messageData.videoBlob.size > 10 * 1024 * 1024) {
-          largeFiles.push({ blob: messageData.videoBlob, type: 'video' });
-        } else if (messageData.videoBlob) {
-          const processedVideo = await MediaProcessor.processMedia(messageData.videoBlob, 'video');
-          cleanMessageData.videoBlob = processedVideo.data;
-          cleanMessageData.mediaMimeType = processedVideo.type;
+        // Process video blob
+        if (messageData.videoBlob) {
+          // Check if it's already a string (base64 or S3 key)
+          if (typeof messageData.videoBlob === 'string') {
+            // Already processed, use as-is
+            cleanMessageData.videoBlob = messageData.videoBlob;
+            console.log('🔍 DEBUG - Video blob is already a string (base64 or S3 key)');
+          } else if (messageData.videoBlob instanceof Blob || (typeof messageData.videoBlob === 'object' && messageData.videoBlob !== null && messageData.videoBlob.size !== undefined)) {
+            // It's a Blob object, process it
+            const blobSize = messageData.videoBlob.size || 0;
+            if (blobSize > 10 * 1024 * 1024) {
+              // Large file, upload to S3
+              largeFiles.push({ blob: messageData.videoBlob, type: 'video' });
+              console.log('🔍 DEBUG - Video blob is large, will upload to S3');
+            } else {
+              // Small file, convert to base64
+              try {
+                const processedVideo = await MediaProcessor.processMedia(messageData.videoBlob, 'video');
+                cleanMessageData.videoBlob = processedVideo.data;
+                cleanMessageData.mediaMimeType = processedVideo.type;
+                console.log('🔍 DEBUG - Video blob processed to base64, size:', processedVideo.data.length);
+              } catch (processError) {
+                console.error('🔍 DEBUG - Error processing video blob:', processError);
+                throw new Error(`Failed to process video: ${processError.message}`);
+              }
+            }
+          } else {
+            console.error('🔍 DEBUG - Invalid videoBlob type:', typeof messageData.videoBlob, messageData.videoBlob);
+            throw new Error('Invalid video data format. Expected Blob or base64 string.');
+          }
         }
 
         if (messageData.files && messageData.files.length > 0) {
@@ -330,12 +358,36 @@ export const messageAPI = {
           cleanMessageData.mediaMimeType = processedAudio.type;
         }
 
-        if (messageData.videoBlob && messageData.videoBlob.size > 10 * 1024 * 1024) {
-          largeFiles.push({ blob: messageData.videoBlob, type: 'video' });
-        } else if (messageData.videoBlob) {
-          const processedVideo = await MediaProcessor.processMedia(messageData.videoBlob, 'video');
-          cleanMessageData.videoBlob = processedVideo.data;
-          cleanMessageData.mediaMimeType = processedVideo.type;
+        // Process video blob
+        if (messageData.videoBlob) {
+          // Check if it's already a string (base64 or S3 key)
+          if (typeof messageData.videoBlob === 'string') {
+            // Already processed, use as-is
+            cleanMessageData.videoBlob = messageData.videoBlob;
+            console.log('🔍 DEBUG - Video blob is already a string (base64 or S3 key)');
+          } else if (messageData.videoBlob instanceof Blob || (typeof messageData.videoBlob === 'object' && messageData.videoBlob !== null && messageData.videoBlob.size !== undefined)) {
+            // It's a Blob object, process it
+            const blobSize = messageData.videoBlob.size || 0;
+            if (blobSize > 10 * 1024 * 1024) {
+              // Large file, upload to S3
+              largeFiles.push({ blob: messageData.videoBlob, type: 'video' });
+              console.log('🔍 DEBUG - Video blob is large, will upload to S3');
+            } else {
+              // Small file, convert to base64
+              try {
+                const processedVideo = await MediaProcessor.processMedia(messageData.videoBlob, 'video');
+                cleanMessageData.videoBlob = processedVideo.data;
+                cleanMessageData.mediaMimeType = processedVideo.type;
+                console.log('🔍 DEBUG - Video blob processed to base64, size:', processedVideo.data.length);
+              } catch (processError) {
+                console.error('🔍 DEBUG - Error processing video blob:', processError);
+                throw new Error(`Failed to process video: ${processError.message}`);
+              }
+            }
+          } else {
+            console.error('🔍 DEBUG - Invalid videoBlob type:', typeof messageData.videoBlob, messageData.videoBlob);
+            throw new Error('Invalid video data format. Expected Blob or base64 string.');
+          }
         }
 
         if (messageData.files && messageData.files.length > 0) {
