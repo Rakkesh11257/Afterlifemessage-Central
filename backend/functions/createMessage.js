@@ -156,7 +156,10 @@ exports.handler = async (event) => {
           // Already uploaded to S3, use the existing key
           message.s3Key = requestBody.audioBlob;
           message.mediaMimeType = requestBody.mediaMimeType || 'audio/webm';
-          message.mediaFileName = `message-${messageId}.${(requestBody.mediaMimeType || 'audio/webm').split('/')[1] || 'webm'}`;
+          // Extract base MIME type (remove codecs) for filename extension
+          const baseMimeType = (requestBody.mediaMimeType || 'audio/webm').split(';')[0].trim();
+          const extension = baseMimeType.split('/')[1] || 'webm';
+          message.mediaFileName = `message-${messageId}.${extension}`;
           console.log('[S3 KEY] Using existing S3 key for audio:', requestBody.audioBlob);
         } else if (typeof requestBody.audioBlob === 'string') {
           // Base64 blob, process and upload
@@ -189,7 +192,10 @@ exports.handler = async (event) => {
             }).promise();
             message.s3Key = s3Key;
             message.mediaMimeType = mimeType; // Keep original format
-            message.mediaFileName = `message-${messageId}.${mimeType.split('/')[1] || 'webm'}`;
+            // Extract base MIME type (remove codecs) for filename extension
+            const baseMimeType = mimeType.split(';')[0].trim();
+            const extension = baseMimeType.split('/')[1] || 'webm';
+            message.mediaFileName = `message-${messageId}.${extension}`;
             console.log(`[S3 UPLOAD] Encrypted audio file stored for message ${messageId} (format: ${mimeType})`);
           } catch (decodeError) {
             console.error('[AUDIO ERROR] Failed to decode base64:', decodeError);
@@ -236,8 +242,12 @@ exports.handler = async (event) => {
             }
           }).promise();
           message.s3Key = s3Key;
+          // Store full MIME type with codecs if present
           message.mediaMimeType = requestBody.mediaMimeType || 'video/webm';
-          message.mediaFileName = `message-${messageId}.${(requestBody.mediaMimeType || 'video/webm').split('/')[1]}`;
+          // Extract base MIME type (remove codecs) for filename extension
+          const baseMimeType = (requestBody.mediaMimeType || 'video/webm').split(';')[0].trim();
+          const extension = baseMimeType.split('/')[1] || 'webm';
+          message.mediaFileName = `message-${messageId}.${extension}`;
           console.log('[S3 UPLOAD] Encrypted video file stored', {
             bucket: process.env.S3_BUCKET,
             key: s3Key,

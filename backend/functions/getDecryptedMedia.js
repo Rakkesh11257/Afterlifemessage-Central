@@ -156,13 +156,18 @@ exports.handler = async (event) => {
         console.log('🔍 DEBUG - Successfully decrypted media.');
         if (decryptedBuffer.length > LARGE_FILE_THRESHOLD) {
           // Upload decrypted file to temp S3 location
-          const ext = (message.mediaFileName || '').split('.').pop() || getDefaultExtension(type);
+          // Clean filename before extracting extension (handle old records with codecs)
+          const cleanFileName = (message.mediaFileName || '').split(';')[0].trim();
+          const ext = cleanFileName.split('.').pop() || getDefaultExtension(type);
           const tempKey = `temp-decrypted/${messageId}-${Date.now()}.${ext}`;
+          // Extract base MIME type (remove codecs) for Content-Type
+          const fullMimeType = message.mediaMimeType || getDefaultMimeType(type);
+          const contentType = fullMimeType.split(';')[0].trim();
           await s3.putObject({
             Bucket: process.env.S3_BUCKET,
             Key: tempKey,
             Body: decryptedBuffer,
-            ContentType: message.mediaMimeType || getDefaultMimeType(type),
+            ContentType: contentType,
             Metadata: {
               decrypted: 'true',
               originalmessageid: messageId
@@ -196,8 +201,15 @@ exports.handler = async (event) => {
     // Handle download=true for direct file download
     if (event.queryStringParameters && event.queryStringParameters.download === 'true') {
       let downloadBuffer;
-      let mimeType = message.mediaMimeType || getDefaultMimeType(type);
+      // Extract base MIME type (remove codecs) for Content-Type header
+      const fullMimeType = message.mediaMimeType || getDefaultMimeType(type);
+      const mimeType = fullMimeType.split(';')[0].trim();
+      // Sanitize filename - remove any codecs or invalid characters that might be in old records
       let fileName = message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`;
+      // Clean filename: remove codecs (e.g., "file.webm;codecs=vp8,opus" -> "file.webm")
+      if (fileName.includes(';')) {
+        fileName = fileName.split(';')[0].trim();
+      }
 
       // If the file is unencrypted (by metadata or by decryption error), immediately redirect for large files
       if (isUnencrypted && fileBuffer.length > MAX_API_GATEWAY_RESPONSE_SIZE) {
@@ -221,7 +233,9 @@ exports.handler = async (event) => {
         downloadBuffer = isUnencrypted ? fileBuffer : (usedDecryption ? decryptedBuffer : decryptBuffer(fileBuffer));
         // If the file is encrypted, decryption succeeded, and decrypted buffer is large, upload to temp S3 and redirect
         if (!isUnencrypted && usedDecryption && decryptedBuffer && decryptedBuffer.length > MAX_API_GATEWAY_RESPONSE_SIZE) {
-          const ext = (message.mediaFileName || '').split('.').pop() || getDefaultExtension(type);
+          // Clean filename before extracting extension (handle old records with codecs)
+          const cleanFileName = (message.mediaFileName || '').split(';')[0].trim();
+          const ext = cleanFileName.split('.').pop() || getDefaultExtension(type);
           const tempKey = `temp-decrypted/${messageId}-download-${Date.now()}.${ext}`;
           await s3.putObject({
             Bucket: process.env.S3_BUCKET,
@@ -334,7 +348,9 @@ exports.handler = async (event) => {
     } else {
       // Only for small, decrypted files - return directly as audio/video/file
       const acceptHeader = (event.headers && (event.headers.Accept || event.headers.accept)) || '';
-      const mimeType = message.mediaMimeType || getDefaultMimeType(type);
+      // Extract base MIME type (remove codecs) for Content-Type header
+      const fullMimeType = message.mediaMimeType || getDefaultMimeType(type);
+      const mimeType = fullMimeType.split(';')[0].trim();
       
       // If explicitly requesting JSON (API client), return JSON
       if (acceptHeader.includes('application/json')) {
@@ -359,7 +375,7 @@ exports.handler = async (event) => {
         headers: {
           ...headers,
           'Content-Type': mimeType,
-          'Content-Disposition': `inline; filename="${message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`}"`
+          'Content-Disposition': `inline; filename="${(message.mediaFileName || `message-${messageId}.${getDefaultExtension(type)}`).split(';')[0].trim()}"`
         },
         isBase64Encoded: true,
         body: base64Data

@@ -201,7 +201,10 @@ exports.handler = async (event) => {
           // It's an S3 key from direct upload
           updateData.s3Key = requestBody.videoBlob;
           updateData.mediaMimeType = requestBody.mediaMimeType || 'video/webm';
-          updateData.mediaFileName = `message-${messageId}.${(requestBody.mediaMimeType || 'video/webm').split('/')[1]}`;
+          // Extract base MIME type (remove codecs) for filename extension
+          const baseMimeType = (requestBody.mediaMimeType || 'video/webm').split(';')[0].trim();
+          const extension = baseMimeType.split('/')[1] || 'webm';
+          updateData.mediaFileName = `message-${messageId}.${extension}`;
           
           console.log('[S3 KEY] Using existing S3 key for video:', requestBody.videoBlob);
         } else {
@@ -224,7 +227,10 @@ exports.handler = async (event) => {
 
           updateData.s3Key = s3Key;
           updateData.mediaMimeType = requestBody.mediaMimeType || 'video/webm';
-          updateData.mediaFileName = `message-${messageId}.${(requestBody.mediaMimeType || 'video/webm').split('/')[1]}`;
+          // Extract base MIME type (remove codecs) for filename extension
+          const baseMimeType = (requestBody.mediaMimeType || 'video/webm').split(';')[0].trim();
+          const extension = baseMimeType.split('/')[1] || 'webm';
+          updateData.mediaFileName = `message-${messageId}.${extension}`;
 
           console.log('[S3 UPLOAD] Updated encrypted video file', {
             bucket: process.env.S3_BUCKET,
